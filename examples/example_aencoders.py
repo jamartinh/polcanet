@@ -85,7 +85,7 @@ class BaseAutoEncoder(nn.Module):
         torch.nn.init.orthogonal_(layer.weight)
 
         layers_decoder.append(layer)
-        layers_decoder.append(act_fn)
+        #layers_decoder.append(act_fn)
         for i in range(1, num_layers):
             layer = nn.Linear(reversed_hidden_dim[i - 1], reversed_hidden_dim[i])
             torch.nn.init.orthogonal_(layer.weight)
@@ -93,7 +93,7 @@ class BaseAutoEncoder(nn.Module):
                 layer = ResNet(layer)
             layers_decoder.append(layer)
             layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            layers_decoder.append(act_fn)
+            #layers_decoder.append(act_fn)
 
         layer = nn.Linear(reversed_hidden_dim[-1], input_dim)
         torch.nn.init.orthogonal_(layer.weight)
@@ -204,11 +204,11 @@ class ConvAutoencoder(nn.Module):
         self.decoder = nn.Sequential(
             UnflattenLayer(self.flattened_size),
             ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.GELU(),
+            #nn.GELU(),
             ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.GELU(),
+            #nn.GELU(),
             ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.GELU(),
+            #nn.GELU(),
             ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1, output_padding=1)
         )
 
