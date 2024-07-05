@@ -1,5 +1,6 @@
 import warnings
 
+import numpy as np
 import torch
 from torch import nn as nn
 
@@ -85,15 +86,14 @@ class BaseAutoEncoder(nn.Module):
         torch.nn.init.orthogonal_(layer.weight)
 
         layers_decoder.append(layer)
-        #layers_decoder.append(act_fn)
+        # layers_decoder.append(act_fn)
         for i in range(1, num_layers):
             layer = nn.Linear(reversed_hidden_dim[i - 1], reversed_hidden_dim[i])
             torch.nn.init.orthogonal_(layer.weight)
             if reversed_hidden_dim[i - 1] == reversed_hidden_dim[i]:
                 layer = ResNet(layer)
             layers_decoder.append(layer)
-            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            #layers_decoder.append(act_fn)
+            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))  # layers_decoder.append(act_fn)
 
         layer = nn.Linear(reversed_hidden_dim[-1], input_dim)
         torch.nn.init.orthogonal_(layer.weight)
@@ -189,28 +189,21 @@ class ConvAutoencoder(nn.Module):
         else:
             raise ValueError("conv_dim must be 1 or 2")
 
-        self.encoder = nn.Sequential(
-            ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1),
-            nn.GELU(),
-            ConvLayer(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.GELU(),
-            ConvLayer(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.GELU(),
-            ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1),
-            nn.GELU(),
-            FlattenLayer()
-        )
+        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), nn.GELU(),
+                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), nn.GELU(),
+                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), nn.GELU(),
+                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), nn.GELU(),
+                                     FlattenLayer())
 
-        self.decoder = nn.Sequential(
-            UnflattenLayer(self.flattened_size),
-            ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
-            #nn.GELU(),
-            ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-            #nn.GELU(),
-            ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-            #nn.GELU(),
-            ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1, output_padding=1)
-        )
+        self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
+                                     ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
+                                                        output_padding=1),  # nn.GELU(),
+                                     ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+                                     # nn.GELU(),
+                                     ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+                                     # nn.GELU(),
+                                     ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1,
+                                                        output_padding=1))
 
     def forward(self, x):
         latent = self.encode(x)
@@ -245,3 +238,26 @@ def autoencoder_factory(autoencoder_type, input_dim, latent_dim, hidden_dim=None
         return ConvAutoencoder(input_dim, latent_dim, conv_dim=2)
     else:
         raise ValueError(f"Unknown autoencoder_type: {autoencoder_type}")
+
+
+def generate_2d_sinusoidal_data(N, M, num_samples):
+    data = []
+    for _ in range(num_samples):
+        x = np.linspace(0, 1, N)
+        y = np.linspace(0, 1, M)
+        xx, yy = np.meshgrid(x, y)
+
+        # Random phase shifts for x and y directions
+        phase_shift_x = np.random.uniform(0, 2 * np.pi)
+        phase_shift_y = np.random.uniform(0, 2 * np.pi)
+
+        # Random frequency multipliers for x and y directions
+        freq_multiplier_x = np.random.uniform(0.5, 1.5)
+        freq_multiplier_y = np.random.uniform(0.5, 1.5)
+
+        # Generate sinusoidal data with random phase and frequency
+        z = np.sin(2 * np.pi * freq_multiplier_x * xx + phase_shift_x) * np.cos(
+            2 * np.pi * freq_multiplier_y * yy + phase_shift_y)
+        data.append(z)
+
+    return np.array(data).astype(np.float32)
