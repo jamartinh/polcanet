@@ -1,1 +1,1 @@
-from polcanet.polcanet import PolcaNet
+from polcanet.polcanet import PolcaNet, LinearDecoder

@@ -7,6 +7,7 @@ POLCANet is an advanced autoencoder model designed to generate orthogonal featur
 ## Key Properties
 
 POLCANet aims to achieve the following key properties:
+
 1. **Generate Orthogonal Features:** Minimize the cosine distance between latent features.
 2. **Concentrate Variance in the First Components:** Minimize the center of mass of the latent space with respect to the left side.
 3. **Enforce Exponential Variance Concentration:** Ensure the variance concentration distribution follows an exponential decay.
@@ -66,4 +67,3 @@ The differences between the left-hand side and the right-hand side of the equati
 ## Dependencies
 
 Ensure you have the required dependencies installed:
-

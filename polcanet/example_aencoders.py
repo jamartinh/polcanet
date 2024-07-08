@@ -8,6 +8,8 @@ from torch import nn as nn
 class MinMaxScalerTorch:
     def __init__(self, min_val=None, max_val=None):
         """Initialize the parameters used by the scaler."""
+        self.max_val = None
+        self.min_val = None
         if max_val is not None and min_val is not None:
             self.min_val = min_val
             self.max_val = max_val
@@ -32,6 +34,39 @@ class MinMaxScalerTorch:
         self.min_val = torch.min(data, dim=0).values
         self.max_val = torch.max(data, dim=0).values
 
+    def to(self, device):
+        if self.min_val is not None and self.max_val is not None:
+            self.min_val = self.min_val.to(device)
+            self.max_val = self.max_val.to(device)
+
+
+# Create a StandardScalerTorch receiving the data as input
+class StandardScalerTorch:
+    def __init__(self, data=None):
+        """Initialize the parameters used by the scaler."""
+        self.mean = None
+        self.std = None
+        if data is not None:
+            self.mean = torch.mean(data, dim=0)
+            self.std = torch.std(data, dim=0)
+
+    def transform(self, act):
+        """Normalize input data x using the scaler."""
+        return (act - self.mean) / self.std
+
+    def inverse_transform(self, act):
+        """Undo the normalization effect on x."""
+        return act * self.std + self.mean
+
+    def fit(self, data):
+        self.mean = torch.mean(data, dim=0)
+        self.std = torch.std(data, dim=0)
+
+    def to(self, device):
+        if self.mean is not None and self.std is not None:
+            self.mean = self.mean.to(device)
+            self.std = self.std.to(device)
+
 
 class ResNet(torch.nn.Module):
     def __init__(self, module):
@@ -47,7 +82,7 @@ class BaseAutoEncoder(nn.Module):
     Base autoencoder neural principal latent components decomposition model.
     """
 
-    def __init__(self, input_dim, latent_dim, hidden_dim, num_layers=3, act_fn=nn.GELU()):
+    def __init__(self, input_dim, latent_dim, hidden_dim, num_layers=3, act_fn=nn.Mish()):
         super().__init__()
         self.latent_dim = latent_dim
         layers_encoder = []
@@ -86,28 +121,20 @@ class BaseAutoEncoder(nn.Module):
         torch.nn.init.orthogonal_(layer.weight)
 
         layers_decoder.append(layer)
-        # layers_decoder.append(act_fn)
+        layers_decoder.append(act_fn)
         for i in range(1, num_layers):
             layer = nn.Linear(reversed_hidden_dim[i - 1], reversed_hidden_dim[i])
             torch.nn.init.orthogonal_(layer.weight)
             if reversed_hidden_dim[i - 1] == reversed_hidden_dim[i]:
                 layer = ResNet(layer)
             layers_decoder.append(layer)
-            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))  # layers_decoder.append(act_fn)
+            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
+            layers_decoder.append(act_fn)
 
         layer = nn.Linear(reversed_hidden_dim[-1], input_dim)
         torch.nn.init.orthogonal_(layer.weight)
         layers_decoder.append(layer)
         self.decoder = nn.Sequential(*layers_decoder)
-
-    def predict(self, x):
-        if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, dtype=torch.float32, device=self.device)
-        with torch.no_grad():
-            z = self.encode(x)
-            reconstruction = self.decode(z)
-
-        return z.detach().cpu().numpy(), reconstruction.detach().cpu().numpy()
 
     def forward(self, x):
         z = self.encode(x)
@@ -189,19 +216,20 @@ class ConvAutoencoder(nn.Module):
         else:
             raise ValueError("conv_dim must be 1 or 2")
 
-        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), nn.GELU(),
-                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), nn.GELU(),
-                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), nn.GELU(),
-                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), nn.GELU(),
+        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), nn.Mish(),
+                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), nn.Mish(),
+                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), nn.Mish(),
+                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), nn.Mish(),
                                      FlattenLayer())
 
         self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
                                      ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
-                                                        output_padding=1),  # nn.GELU(),
+                                                        output_padding=1),
+                                     # nn.Mish(),
                                      ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     # nn.GELU(),
+                                     # nn.Mish(),
                                      ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     # nn.GELU(),
+                                     # nn.Mish(),
                                      ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1,
                                                         output_padding=1))
 

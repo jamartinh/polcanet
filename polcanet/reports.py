@@ -60,7 +60,7 @@ def analyze_latent_feature_importance(model, data):
     Compute and visualize latent feature importance based on variance.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array)
 
     Returns:
@@ -76,13 +76,12 @@ def analyze_latent_feature_importance(model, data):
     feature_importance_normalized = feature_importance / np.sum(feature_importance)
 
     # Plot results
-    plt.figure(figsize=(12, 6))
+    plt.figure()
     plt.bar(range(len(feature_importance_normalized)), feature_importance_normalized)
     plt.xlabel('Latent Feature Index')
     plt.ylabel('Normalized Variance')
     plt.title('Latent Feature Importance (Based on Variance)')
     plt.xticks(range(0, len(feature_importance_normalized), max(1, len(feature_importance_normalized) // 10)))
-    plt.grid(True)
 
     # Add a trend line
     z = np.polyfit(range(len(feature_importance_normalized)), feature_importance_normalized, 1)
@@ -93,12 +92,11 @@ def analyze_latent_feature_importance(model, data):
 
     # Plot cumulative importance
     cumulative_importance = np.cumsum(feature_importance_normalized)
-    plt.figure(figsize=(12, 6))
+    plt.figure()
     plt.plot(range(1, len(cumulative_importance) + 1), cumulative_importance, 'bo-')
     plt.xlabel('Number of Latent Features')
     plt.ylabel('Cumulative Normalized Variance')
     plt.title('Cumulative Latent Feature Importance')
-    plt.grid(True)
     plt.show()
 
     # Print some statistics
@@ -118,7 +116,7 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
     Analyze reconstruction errors, handling both low and high-dimensional data.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array)
     - n_samples: Number of samples to use for error distribution estimation (if data is larger)
     """
@@ -135,7 +133,7 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
         errors = errors[indices]
 
     # Plot histogram of errors
-    plt.figure(figsize=(10, 6))
+    plt.figure()
     plt.hist(errors, bins=50, density=True, alpha=0.7)
     plt.xlabel('Reconstruction Error (MSE)')
     plt.ylabel('Density')
@@ -159,7 +157,6 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
     plt.axvline(median_error, color='r', linestyle=':', label=f'Median Error: {median_error:.4f}')
 
     plt.legend()
-    plt.grid(True)
     plt.show()
 
     # Print some statistics
@@ -224,7 +221,7 @@ def show_correlation_matrix(model, latents=None, data=None):
     corr = pd.DataFrame(x_corr)
 
     # Set up the matplotlib figure
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig, ax = plt.subplots()
 
     # Create the heatmap
     cax = ax.matshow(corr, cmap='coolwarm', vmin=-1, vmax=1)
@@ -233,7 +230,7 @@ def show_correlation_matrix(model, latents=None, data=None):
     fig.colorbar(cax)
 
     # Add title
-    plt.title("Correlation Matrix of Latent Components", fontsize=16)
+    plt.title("Correlation Matrix of Latent Components")
 
     # Show the plot
     plt.show()
@@ -246,7 +243,7 @@ def analyze_latent_space(model, data=None, latents=None):
     of the latent space.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array), optional if latents are provided
     - latents: Latent representations (numpy array), optional if data is provided
     """
@@ -297,7 +294,7 @@ def analyze_latent_space(model, data=None, latents=None):
     elif variance_concentration > 0.6:
         print("Good concentration of variance, but there might be room for improvement.")
     else:
-        print("Poor concentration of variance. The model may need adjustment.")
+        print("Poor concentration of variance. The encoder may need adjustment.")
     print()
 
     print("3. Orthogonality Analysis")
@@ -314,7 +311,7 @@ def analyze_latent_space(model, data=None, latents=None):
     elif decorrelation_metric > 0.7:
         print("Good orthogonality, but there might be room for improvement.")
     else:
-        print("Poor orthogonality. The model may need adjustment.")
+        print("Poor orthogonality. The encoder may need adjustment.")
     print()
 
     print("4. Detailed Component Analysis")
@@ -329,14 +326,14 @@ def analyze_latent_space(model, data=None, latents=None):
     print()
 
 
-def orthogonality_test_analysis(model, data, num_samples=100, n_components=10):
+def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10):
     """
     Analyze the orthogonality of the latent features of the autoencoder.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array)
-    - num_samples: Number of samples to test (default: 100)
+    - num_samples: Number of samples to test (default: 1000)
     - n_components: Number of components to plot in the scatter correlation matrix
     """
     # Select random samples from the data
@@ -372,24 +369,24 @@ def orthogonality_test_analysis(model, data, num_samples=100, n_components=10):
     print(report)
 
     # Plot cosine similarity matrix
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots()
     cax = ax.matshow(cosine_sim, cmap='coolwarm', vmin=-1, vmax=1)
     fig.colorbar(cax)
-    ax.set_title('Cosine Similarity Matrix of Latent Features', pad=20)
+    ax.set_title('Cosine Similarity Matrix of Latent Features')
     plt.show()
 
     # Plot scatter correlation matrix
     plot_scatter_corr_matrix(model, latents=latent_x, n_components=n_components)
 
 
-def variance_test_analysis(model, data, num_samples=100):
+def variance_test_analysis(model, data, num_samples=1000):
     """
     Analyze the variance concentration of the latent features of the autoencoder.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array)
-    - num_samples: Number of samples to test (default: 100)
+    - num_samples: Number of samples to test (default: 1000)
     """
     # Select random samples from the data
     indices = np.random.choice(data.shape[0], num_samples, replace=False)
@@ -409,12 +406,6 @@ def variance_test_analysis(model, data, num_samples=100):
     normalized_variances = variances / np.sum(variances)
     exp_fit = np.exp(-components)
     exp_fit /= np.sum(exp_fit)
-
-    # Explained Variance Ratio
-    explained_variance_ratio = variances / np.sum(variances)
-
-    # Cumulative Variance Ratio
-    cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
 
     # Reporting text with statistics
     report = f"""
@@ -436,23 +427,25 @@ def variance_test_analysis(model, data, num_samples=100):
     print(report)
 
     # Plot variance distribution and exponential fit
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots()
     ax.plot(components, normalized_variances, 'o-', label='Normalized Variances')
     ax.plot(components, exp_fit, 'r--', label='Exponential Fit')
-    ax.set_title('Variance Distribution and Exponential Fit', fontsize=14)
-    ax.set_xlabel('Latent Components', fontsize=12)
-    ax.set_ylabel('Normalized Variance', fontsize=12)
+    ax.set_title('Variance Distribution and Exponential Fit')
+    ax.set_xlabel('Latent Components')
+    ax.set_ylabel('Normalized Variance')
     ax.legend()
+    plt.tight_layout()
     plt.show()
 
     # Plot cumulative variance
     cumulative_variance = np.cumsum(normalized_variances)
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots()
     ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance')
-    ax.set_title('Cumulative Variance of Latent Components', fontsize=14)
-    ax.set_xlabel('Latent Components', fontsize=12)
-    ax.set_ylabel('Cumulative Variance', fontsize=12)
+    ax.set_title('Cumulative Variance of Latent Components')
+    ax.set_xlabel('Latent Components')
+    ax.set_ylabel('Cumulative Variance')
     ax.legend()
+    plt.tight_layout()
     plt.show()
 
     # Analyze and plot variance concentration
@@ -461,52 +454,29 @@ def variance_test_analysis(model, data, num_samples=100):
     for i in range(top_n):
         component_table.append([i + 1, f"{normalized_variances[i]:.4f}", f"{cumulative_variance[i]:.4f}"])
 
-    report_table = "\n".join(
-        [f"Component {row[0]}: Normalized Variance = {row[1]}, Cumulative Variance = {row[2]}" for row in
-         component_table])
-    print(f"Top {top_n} Components Variance Analysis:\n{report_table}")
-
     # Plot variance concentration in top components
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(range(1, top_n + 1), normalized_variances[:top_n])
-    ax.set_title('Variance Concentration in Top Components', fontsize=14)
-    ax.set_xlabel('Latent Components', fontsize=12)
-    ax.set_ylabel('Normalized Variance', fontsize=12)
-    plt.show()
+    fig, ax = plt.subplots()
+    ax.barh(range(1, top_n + 1), normalized_variances[:top_n], fill=False, edgecolor='k', linewidth=1)
+    # set barh without fill
 
-    # Plot Explained Variance Ratio
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(components, explained_variance_ratio, 'o-', label='Explained Variance Ratio')
-    ax.set_title('Explained Variance Ratio', fontsize=14)
-    ax.set_xlabel('Latent Components', fontsize=12)
-    ax.set_ylabel('Explained Variance Ratio', fontsize=12)
-    ax.legend()
-    plt.show()
+    ax.set_title('Variance Concentration in Top Components')
+    ax.set_ylabel('Latent Components')
+    ax.set_xlabel('Normalized Variance')
+    # increase the limit of x-axis
+    x_axis_lim = np.max(normalized_variances[:top_n])
+    ax.set_xlim(0, x_axis_lim+0.1)
 
-    # Plot Cumulative Variance Ratio
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(components, cumulative_variance_ratio, 'o-', label='Cumulative Variance Ratio')
-    ax.set_title('Cumulative Variance Ratio', fontsize=14)
-    ax.set_xlabel('Latent Components', fontsize=12)
-    ax.set_ylabel('Cumulative Variance Ratio', fontsize=12)
-    ax.legend()
-    plt.show()
+    ax.set_yticks(range(1, top_n + 1), labels=range(1, top_n + 1))
+    ax.invert_yaxis()  # labels read top-to-bottom
+    # Add the value to each bar at the middle
+    for i, (v1,v2) in enumerate(zip(normalized_variances[:top_n], cumulative_variance[:top_n])):
+        # make the text color black an appearing as a percentage
+        ax.text(x_axis_lim+0.025, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
+                fontsize=8)
+        ax.text(x_axis_lim+0.05, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
+                fontsize=8)
 
-    # Plot Latent Feature Importance (Based on Variance)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(range(len(explained_variance_ratio)), explained_variance_ratio)
-    ax.set_title('Latent Feature Importance (Based on Variance)', fontsize=14)
-    ax.set_xlabel('Latent Feature Index', fontsize=12)
-    ax.set_ylabel('Normalized Variance', fontsize=12)
-    plt.show()
-
-    # Plot Cumulative Latent Feature Importance
-    cumulative_importance = np.cumsum(explained_variance_ratio)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(range(1, len(cumulative_importance) + 1), cumulative_importance, 'bo-')
-    ax.set_title('Cumulative Latent Feature Importance', fontsize=14)
-    ax.set_xlabel('Number of Latent Features', fontsize=12)
-    ax.set_ylabel('Cumulative Normalized Variance', fontsize=12)
+    plt.tight_layout()
     plt.show()
 
 
@@ -515,7 +485,7 @@ def linearity_tests_analysis(model, data, num_samples=100):
     Analyze the linearity properties of the autoencoder.
 
     Parameters:
-    - model: The autoencoder model instance
+    - encoder: The autoencoder encoder instance
     - data: Input data (numpy array)
     - num_samples: Number of samples to test (default: 100)
     """
@@ -560,7 +530,7 @@ def linearity_tests_analysis(model, data, num_samples=100):
     ---------------------
     The additive property is tested to verify if:
 
-    f(z(x) + z(y)) = f(z(x)) + f(z(y))
+    f(z_x + z_y) = f(z_x) + f(z_y)
 
     The differences between the left-hand side and the right-hand side of the equation are 
     summarized below:
@@ -573,7 +543,7 @@ def linearity_tests_analysis(model, data, num_samples=100):
     ---------------------------------------
     The homogeneity property is tested to verify if:
 
-    f(a.z(x)) = a.f(z(x))
+    f(a.z_x) = a.f(z_x_)
 
     The differences between the left-hand side and the right-hand side of the equation are 
     summarized below:
@@ -586,38 +556,48 @@ def linearity_tests_analysis(model, data, num_samples=100):
     print(report)
 
     # Plot results
-    fig, axs = plt.subplots(2, 2, figsize=(15, 15))
-    fig.suptitle(r"Autoencoder Linearity Tests", fontsize=16)
+    fig, axs = plt.subplots(2, 2)
+    fig.suptitle(r"Autoencoder Linearity Tests")
 
     # Additive property plot
     for i in range(10):  # Plot first 10 samples
         axs[0, 0].scatter(decoded_latent_x_plus_y[i].flatten(), decoded_latent_x_plus_decoded_latent_y[i].flatten(),
-                          alpha=0.5)
+                          alpha=0.5, s=1)
     axs[0, 0].plot([0, 1], [0, 1], 'r--')
-    axs[0, 0].set_title(r"Additive Property: $f(z(x) + z(y)) = f(z(x)) + f(z(y))$", fontsize=14)
-    axs[0, 0].set_xlabel(r"$f(z(x) + z(y))$", fontsize=12)
-    axs[0, 0].set_ylabel(r"$f(z(x)) + f(z(y))$", fontsize=12)
+    axs[0, 0].set_title("Additive Property:\n " + r"$f(z_x + z_y) = f(z_x) + f(z_y)$")
+    axs[0, 0].set_xlabel(r"$f(z_x + z_y)$")
+    axs[0, 0].set_ylabel(r"$f(z_x) + f(z_y)$")
+    # Add correlation legend to the plot
+    axs[0, 0].text(0.5, 0.1,
+                   f"Correlation: {np.corrcoef(decoded_latent_x_plus_y.flatten(),
+                                               decoded_latent_x_plus_decoded_latent_y.flatten())[0, 1]:.4f}",
+                   ha='center', va='center', transform=axs[0, 0].transAxes, fontsize=8)
 
     # Homogeneity property plot (scalar alpha)
     for i in range(10):  # Plot first 10 samples
         axs[0, 1].scatter(decoded_latent_alpha_x_scalar[i].flatten(), alpha_decoded_latent_x_scalar[i].flatten(),
-                          alpha=0.5)
+                          alpha=0.5, s=1)
     axs[0, 1].plot([0, 1], [0, 1], 'r--')
-    axs[0, 1].set_title(r"Homogeneity Property: $f(\alpha z(x)) = \alpha f(z(x))$", fontsize=14)
-    axs[0, 1].set_xlabel(r"$f(\alpha z(x))$", fontsize=12)
-    axs[0, 1].set_ylabel(r"$\alpha f(z(x))$", fontsize=12)
+    axs[0, 1].set_title("Homogeneity Property:\n" + r"$f(\alpha z_x) = \alpha f(z_x)$")
+    axs[0, 1].set_xlabel(r"$f(\alpha z_x)$")
+    axs[0, 1].set_ylabel(r"$\alpha f(z_x)$")
+    # Add correlation legend to the plot
+    axs[0, 1].text(0.5, 0.1,
+                   f"Correlation: {np.corrcoef(decoded_latent_alpha_x_scalar.flatten(),
+                                               alpha_decoded_latent_x_scalar.flatten())[0, 1]:.4f}",
+                   ha='center', va='center', transform=axs[0, 1].transAxes, fontsize=8)
 
     # Difference plots for additive property
     axs[1, 0].hist(differences_additive.flatten(), bins=50, density=True, alpha=0.7)
-    axs[1, 0].set_title(r"Additive Property Differences", fontsize=14)
-    axs[1, 0].set_xlabel(r"$|f(z(x) + z(y)) - (f(z(x)) + f(z(y)))|$", fontsize=12)
-    axs[1, 0].set_ylabel("Density", fontsize=12)
+    axs[1, 0].set_title("Additive Property Differences")
+    axs[1, 0].set_xlabel(r"$|f(z_x + z_y) - ( f(z_x) + f(z_y) )|$")
+    axs[1, 0].set_ylabel("Density")
 
     # Difference plots for homogeneity property (scalar alpha)
     axs[1, 1].hist(differences_homogeneity_scalar.flatten(), bins=50, density=True, alpha=0.7)
-    axs[1, 1].set_title(r"Homogeneity Property Differences (Scalar $\alpha$)", fontsize=14)
-    axs[1, 1].set_xlabel(r"$|f(\alpha z(x)) - \alpha f(z(x))|$", fontsize=12)
-    axs[1, 1].set_ylabel("Density", fontsize=12)
+    axs[1, 1].set_title(r"Homogeneity Property Differences (Scalar $\alpha$)")
+    axs[1, 1].set_xlabel(r"$|f(\alpha z_x) - \alpha f(z_x)|$")
+    axs[1, 1].set_ylabel("Density")
 
-    plt.tight_layout(rect=(0, 0, 1, 0.96))
+    plt.tight_layout()
     plt.show()
