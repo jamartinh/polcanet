@@ -1,4 +1,3 @@
-import math
 from collections import defaultdict
 
 import numpy as np
@@ -7,155 +6,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm.auto import tqdm
 
-
-class FakeScaler:
-    def __init__(self):
-        pass
-
-    @staticmethod
-    def transform(x):
-        return x
-
-    @staticmethod
-    def inverse_transform(x):
-        return x
-
-    @staticmethod
-    def fit(data):
-        pass
-
-    def to(self, device):
-        return self
-
-
-# Custom weight initialization function
-def custom_weight_init(m):
-    """
-        Custom weight initialization for linear layers.
-
-        This function initializes the weights of linear layers to account for non-uniform variance
-        in input features. The input vector is assumed to have independent features with variance
-        concentrated in the first components (from left to right). The initialization starts with
-        Xavier initialization and applies custom scaling to emphasize the higher variance in the
-        first components.
-
-        Theory:
-            Standard weight initialization techniques like Xavier or He initialization aim to preserve
-            the variance of activations across layers. However, these methods assume uniform variance
-            across input features, which may not be optimal when the input features have non-uniform
-            variance.
-
-            In cases where the input features have higher variance in the first components, a custom
-            scaling approach can be used. This involves:
-            1. Initializing weights using Xavier initialization.
-            2. Applying a custom scaling factor based on the feature index, with larger values for
-               weights corresponding to the first components.
-
-            This approach ensures that the initialized weights reflect the variance distribution of the
-            input features, potentially leading to better training dynamics and performance.
-
-        Args:
-            m (nn.Module): The module to initialize. This function only applies to nn.Linear layers.
-
-        Example:
-            >>> layer = nn.Linear(10, 5)
-            >>> custom_weight_init(layer)
-            >>> print(layer.weight)
-
-        """
-    if isinstance(m, nn.Linear):
-        # Xavier initialization as base
-        fan_in, fan_out = m.weight.size(1), m.weight.size(0)
-        std = math.sqrt(2.0 / (fan_in + fan_out))
-
-        # Custom scaling based on feature index
-        weight_shape = m.weight.shape
-        custom_scale = torch.linspace(1.5, 0.5, weight_shape[1])  # Example scaling from 1.5 to 0.5
-        custom_scale = custom_scale.view(1, -1).expand(weight_shape)
-
-        # Initialize weights
-        with torch.no_grad():
-            m.weight.copy_(torch.randn(weight_shape) * std * custom_scale)
-
-        # Bias initialization (optional, can be zero)
-        if m.bias is not None:
-            with torch.no_grad():
-                m.bias.fill_(0.0)
-
-
-class LinearDecoder(nn.Module):
-    """
-        A linear decoder module for an autoencoder.
-
-        This class implements a versatile linear decoder that accepts a vector of latent features
-        and outputs data in a specified shape. The decoder is fully linear (no nonlinearities) and
-        can have multiple linear layers.
-
-        Args:
-            latent_dim (int): Dimension of the latent vector.
-            output_shape (tuple): Desired shape of a single instance of the output data.
-            num_layers (int): Number of linear layers in the decoder (default is 1).
-
-        Attributes:
-            latent_dim (int): Dimension of the latent vector.
-            output_shape (tuple): Desired shape of a single instance of the output data.
-            output_dim (int): Total number of elements in the output data, calculated as the product
-                              of the dimensions in output_shape.
-            decoder (nn.Sequential): Sequential container of linear layers.
-
-        Methods:
-            forward(x):
-                Passes the input latent vector through the linear layers and reshapes the output to
-                the specified output shape, including the batch dimension.
-
-        Example:
-            >>> latent_dim = 16
-            >>> output_shape = (3, 32, 32)  # Shape of a 32x32 RGB image
-            >>> num_layers = 2
-            >>> decoder = LinearDecoder(latent_dim, output_shape, num_layers)
-            >>> latent_vector = torch.randn((4, latent_dim))  # Batch of 4 latent vectors
-            >>> output = decoder(latent_vector)
-            >>> print(output.shape)
-            torch.Size([4, 3, 32, 32])
-
-        Example 2: Decoding to a vector shape
-            >>> latent_dim = 8
-            >>> output_shape = (20,)  # Shape of a vector with 20 elements
-            >>> num_layers = 3
-            >>> decoder = LinearDecoder(latent_dim, output_shape, num_layers)
-            >>> latent_vector = torch.randn((5, latent_dim))  # Batch of 5 latent vectors
-            >>> output = decoder(latent_vector)
-            >>> print(output.shape)
-            torch.Size([5, 20])
-    """
-
-    def __init__(self, latent_dim, output_shape, hidden_dim=256, num_layers=1):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.output_shape = output_shape
-        self.output_dim = int(torch.prod(torch.tensor(output_shape)))
-
-        layers = []
-        input_dim = latent_dim
-        for i in range(num_layers - 1):
-            if i == 0:
-                layer = nn.Linear(input_dim, hidden_dim)
-                # Apply custom weight initialization to the first layer only
-                custom_weight_init(layer)
-                layers.append(layer)
-            else:
-                layers.append(nn.Linear(hidden_dim, hidden_dim))
-
-        layers.append(nn.Linear(hidden_dim, self.output_dim))
-        self.decoder = nn.Sequential(*layers)
-
-    def forward(self, x):
-        x = self.decoder(x)
-        return x.view(-1, *self.output_shape)
-
-    def decode(self, z):
-        reconstruction = self.forward(z)
-        return reconstruction
+from polcanet.polcanet_utils import FakeScaler
 
 
 class PolcaNet(nn.Module):
@@ -169,8 +20,6 @@ class PolcaNet(nn.Module):
         gamma (float): The weight for the low variance loss.
         device (str): The device to run the encoder on ("cpu" or "cuda").
         encoder (examples.example_aencoders.BaseAutoEncoder): The base autoencoder encoder.
-        bias (nn.Parameter): A learnable constant added to the latent space.
-        reconstruction_loss_fn (nn.MSELoss): The reconstruction loss function.
         scaler (examples.example_aencoders.MinMaxScalerTorch): The scaler used to normalize the data.
         std_metrics (torch.Tensor): The standard deviation of the latent space.
         mean_metrics (torch.Tensor): The mean of the latent space.
@@ -210,23 +59,14 @@ class PolcaNet(nn.Module):
 
         self.encoder = encoder
         if hasattr(self.encoder, "decoder"):
+            # remove the attribute decoder from the encoder
             self.encoder.decoder = None
-
-        # A middleware layers to add non-linearity to the latent space including batch norms
-        # self.middleware = nn.Sequential(
-        #     # nn.BatchNorm1d(latent_dim),
-        #     # nn.Linear(latent_dim, 256),
-        #     # nn.Mish(),
-        #     # nn.BatchNorm1d(256),
-        #     # nn.Linear(256, 256),
-        #     # nn.Mish(),
-        #     # nn.BatchNorm1d(256),
-        #     # nn.Linear(256, 256),
-        #     nn.Linear(latent_dim, latent_dim)
-        # )
+            del self.encoder.decoder
 
         self.decoder = decoder
         if hasattr(self.decoder, "encoder"):
+            # remove the attribute encoder from the decoder
+            self.decoder.encoder = None
             self.encoder.encoder = None
 
         self.scaler = scaler or FakeScaler()
@@ -308,10 +148,6 @@ class PolcaNet(nn.Module):
     def to(self, device):
         self.device = device
         super().to(device)
-        # self.encoder.to(device)
-        # self.decoder.to(device)
-        # self.middleware.to(device)
-        # self.bias = self.bias.to(device)
         self.scaler.to(device)
         return self
 
@@ -440,15 +276,16 @@ class PolcaNet(nn.Module):
         # reconstruction loss
         l1 = nn.functional.mse_loss(r, x)
         # correlation loss
-        # l2 = self.compute_cross_correlation_loss(z) if self.alpha != 0 else torch.tensor([0], dtype=torch.float32,
+        # l21 = self.cross_correlation_loss(z) if self.alpha != 0 else torch.tensor([0], dtype=torch.float32,
         #                                                                                  device=x.device)
         l2 = self.orthogonality_loss(z) if self.alpha != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
+        # l2 = l21 + l22
         # ordering loss
         l3 = self.center_of_mass_loss(z) if self.beta != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
         # low variance loss
         l4 = self.exp_decay_var_loss(z) if self.gamma != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
 
-        #mean_loss = (torch.mean(z, dim=0) - self.bias).pow(2).sum()
-        loss = l1 + self.alpha * l2 + self.beta * l3 + self.gamma * l4 #+ mean_loss
+        # mean_loss = (torch.mean(z, dim=0) - self.bias).pow(2).sum()
+        loss = l1 + self.alpha * l2 + self.beta * l3 + self.gamma * l4  # + mean_loss
 
         return loss, (l1, l2, l3, l4)

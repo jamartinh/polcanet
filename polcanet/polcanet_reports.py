@@ -24,34 +24,28 @@ def plot_cumsum_variance(model, data):
     arr_x = np.zeros((latents.shape[1], latents.shape[1]))
     idx = np.tril_indices(latents.shape[1])
     arr_x[idx[0], idx[1]] = 1
-
-    total_var = np.var(inputs)
-
     errors = []
-    variances = []
     for i in range(latents.shape[1]):
         w = arr_x[i, :]
         latents = model.encode(inputs)
         reconstructed = model.decode(latents, w)
-        error = np.mean(np.mean((inputs - reconstructed) ** 2, axis=1))
+        error = np.mean((inputs - reconstructed) ** 2)
         errors.append(error)
-        total_var_approx = np.var(reconstructed)
-        cumulative_percent_variance = np.clip(((total_var_approx / total_var) * 100.0), 0, 100)
-        variances.append(cumulative_percent_variance)
-        print(f"({i + 1}) reconstruction error: {error:.4f}, "
-              f"variance: {cumulative_percent_variance:.1f}%, "
-              f"with {i + 1:6d}  active latent components")
 
     errors = np.array(errors)
-    norm_errors = 100 * (errors / (np.sum(errors)))
-    cumulative_percent_variances = np.array(variances)
+    norm_errors = 100 * (errors / (np.max(errors)))
 
-    plt.plot(norm_errors, "o-", label="reconstruction mse")
-    plt.title("Percentage error reduction by adding more components")
+    plt.plot(norm_errors,
+             label="reconstruction mse",
+             color="black",
+             alpha=0.7,
+             linewidth=1,
+             marker=None,
+             )
 
-    plt.plot(cumulative_percent_variances, "o-", label="explained variance")
-    plt.title("Cumulative ptc variances")
+    plt.title("Percentage error reduction by adding successive components")
     plt.legend()
+    plt.tight_layout()
     plt.show()
 
 
@@ -320,7 +314,7 @@ def analyze_latent_space(model, data=None, latents=None):
     component_table = []
     for i in range(top_n):
         component_table.append([i + 1, f"{explained_variance_ratio[i]:.4f}", f"{cumulative_variance_ratio[i]:.4f}",
-                                f"{np.mean(np.abs(corr[i, i + 1:])):.4f}"])
+                                f"{np.nanmean(np.abs(corr[i, i + 1:])):.4f}"])
     print(tabulate(component_table,
                    headers=["Component", "Variance Ratio", "Cumulative Variance", "Mean |Correlation| with Others"]))
     print()
@@ -337,6 +331,7 @@ def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10):
     - n_components: Number of components to plot in the scatter correlation matrix
     """
     # Select random samples from the data
+    num_samples = min(num_samples, data.shape[0])
     indices = np.random.choice(data.shape[0], num_samples, replace=False)
     x_samples = data[indices]
 
@@ -388,6 +383,7 @@ def variance_test_analysis(model, data, num_samples=1000):
     - data: Input data (numpy array)
     - num_samples: Number of samples to test (default: 1000)
     """
+    num_samples = min(num_samples, data.shape[0])
     # Select random samples from the data
     indices = np.random.choice(data.shape[0], num_samples, replace=False)
     x_samples = data[indices]
@@ -464,16 +460,16 @@ def variance_test_analysis(model, data, num_samples=1000):
     ax.set_xlabel('Normalized Variance')
     # increase the limit of x-axis
     x_axis_lim = np.max(normalized_variances[:top_n])
-    ax.set_xlim(0, x_axis_lim+0.1)
+    ax.set_xlim(0, x_axis_lim+0.2)
 
     ax.set_yticks(range(1, top_n + 1), labels=range(1, top_n + 1))
     ax.invert_yaxis()  # labels read top-to-bottom
     # Add the value to each bar at the middle
     for i, (v1,v2) in enumerate(zip(normalized_variances[:top_n], cumulative_variance[:top_n])):
         # make the text color black an appearing as a percentage
-        ax.text(x_axis_lim+0.025, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
+        ax.text(x_axis_lim+0.015, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
                 fontsize=8)
-        ax.text(x_axis_lim+0.05, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
+        ax.text(x_axis_lim+0.075, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
                 fontsize=8)
 
     plt.tight_layout()

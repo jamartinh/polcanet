@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+tabulate
+polcanet
+torch
+tqdm
+pydantic
+pythae
+setuptools

@@ -77,19 +77,24 @@ class ResNet(torch.nn.Module):
         return self.module(inputs) + inputs
 
 
-class BaseAutoEncoder(nn.Module):
+class DenseAutoEncoder(nn.Module):
     """
     Base autoencoder neural principal latent components decomposition model.
     """
 
-    def __init__(self, input_dim, latent_dim, hidden_dim, num_layers=3, act_fn=nn.Mish()):
+    def __init__(self, input_dim: int | list | tuple, latent_dim: int, hidden_dim: int | list | tuple, num_layers=3,
+                 act_fn=nn.Mish()):
         super().__init__()
+        # check if input_dim is instance of iterable in such a case take the first argument only
+        if isinstance(input_dim, (list, tuple)):
+            input_dim = input_dim[0]
+
         self.latent_dim = latent_dim
         layers_encoder = []
-        if not isinstance(hidden_dim, list):
+        if not isinstance(hidden_dim, (list, tuple)):
             hidden_dim = [hidden_dim] * num_layers
         elif len(hidden_dim) != num_layers:
-            warnings.warn("The hidden_dim is a list, the length of hidden_dim must be equal to num_layers."
+            warnings.warn("The hidden_dim is an iterable, the length of hidden_dim must be equal to num_layers."
                           " Setting it to [hidden_dim] * num_layers.")
             num_layers = len(hidden_dim)
 
@@ -255,7 +260,7 @@ class ConvAutoencoder(nn.Module):
 def autoencoder_factory(autoencoder_type, input_dim, latent_dim, hidden_dim=None, seq_len=None, num_layers=None,
                         act_fn=None):
     if autoencoder_type == "dense":
-        return BaseAutoEncoder(input_dim, latent_dim, hidden_dim, num_layers, act_fn=act_fn)
+        return DenseAutoEncoder(input_dim, latent_dim, hidden_dim, num_layers, act_fn=act_fn)
     elif autoencoder_type == "lstm":
         if seq_len is None:
             raise ValueError("seq_len must be provided for LSTMAutoencoder.")
