@@ -12,20 +12,19 @@ from polcanet import LinearDecoder
 from polcanet.polcanet_config import PolcaNetConfig
 
 
-class LinearDecoderPythae(LinearDecoder, BaseDecoder):
+class LinearDecoderPythae(BaseDecoder):
     def __init__(self, args, hidden_dim, num_layers):
         BaseDecoder.__init__(self)
-        LinearDecoder.__init__(self,
-                               latent_dim=args.latent_dim,
-                               input_dim=args.input_dim,
-                               hidden_dim=hidden_dim,
-                               num_layers=num_layers,
-                               )
+        self.decoder = LinearDecoder(
+            latent_dim=args.latent_dim,
+            input_dim=args.input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+        )
 
     def forward(self, z: torch.Tensor):
         output = ModelOutput()
         x = self.decoder(z)
-        x = x.view(-1, *self.input_dim)
         output["reconstruction"] = x
         return output
 
@@ -122,8 +121,10 @@ class PolcaNetPythae(BaseAE):
         :return:
         """
         x: torch.Tensor = inputs["data"]
-        z = self.encoder(x)
-        r = self.decoder(z)["reconstruction"]
+        encoder_output = self.encoder(x)
+        z = encoder_output.embedding
+        decoder_output = self.decoder(z)
+        r = decoder_output["reconstruction"]
 
         losses = self.loss_function(x, r, z)
         output = ModelOutput(
