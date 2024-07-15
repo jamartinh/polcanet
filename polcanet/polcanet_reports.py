@@ -365,7 +365,7 @@ def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10):
 
     # Plot cosine similarity matrix
     fig, ax = plt.subplots()
-    cax = ax.matshow(cosine_sim, cmap='coolwarm', vmin=-1, vmax=1)
+    cax = ax.matshow(cosine_sim, cmap='coolwarm', vmin=-1, vmax=1, alpha=0.8, interpolation='nearest', aspect='auto')
     fig.colorbar(cax)
     ax.set_title('Cosine Similarity Matrix of Latent Features')
     plt.show()
@@ -516,10 +516,10 @@ def linearity_tests_analysis(model, data, num_samples=100):
     Linearity Tests Analysis
     =========================
 
-    This report analyzes the linearity properties of the autoencoder. We used a sample size of 
+    This report analyzes the linearity properties of the autoencoder. We used a sample size of
     {num_samples} randomly selected data points for the analysis.
 
-    The linearity properties of the features are assessed through two tests: additive property 
+    The linearity properties of the features are assessed through two tests: additive property
     and homogeneity property. The results are summarized below:
 
     1. Additive Property:
@@ -528,7 +528,7 @@ def linearity_tests_analysis(model, data, num_samples=100):
 
     f(z_x + z_y) = f(z_x) + f(z_y)
 
-    The differences between the left-hand side and the right-hand side of the equation are 
+    The differences between the left-hand side and the right-hand side of the equation are
     summarized below:
 
     - Mean difference: {np.mean(differences_additive):.4f}
@@ -541,7 +541,7 @@ def linearity_tests_analysis(model, data, num_samples=100):
 
     f(a.z_x) = a.f(z_x_)
 
-    The differences between the left-hand side and the right-hand side of the equation are 
+    The differences between the left-hand side and the right-hand side of the equation are
     summarized below:
 
     - Mean difference: {np.mean(differences_homogeneity_scalar):.4f}
@@ -559,7 +559,9 @@ def linearity_tests_analysis(model, data, num_samples=100):
     for i in range(10):  # Plot first 10 samples
         axs[0, 0].scatter(decoded_latent_x_plus_y[i].flatten(), decoded_latent_x_plus_decoded_latent_y[i].flatten(),
                           alpha=0.5, s=1)
-    axs[0, 0].plot([0, 1], [0, 1], 'r--')
+    max_val = max(decoded_latent_x_plus_y.max(), decoded_latent_x_plus_decoded_latent_y.max())
+    min_val = min(decoded_latent_x_plus_y.min(), decoded_latent_x_plus_decoded_latent_y.min())
+    axs[0, 0].plot([min_val, max_val], [min_val, max_val], 'r--')
     axs[0, 0].set_title("Additive Property:\n " + r"$f(z_x + z_y) = f(z_x) + f(z_y)$")
     axs[0, 0].set_xlabel(r"$f(z_x + z_y)$")
     axs[0, 0].set_ylabel(r"$f(z_x) + f(z_y)$")
@@ -573,7 +575,9 @@ def linearity_tests_analysis(model, data, num_samples=100):
     for i in range(10):  # Plot first 10 samples
         axs[0, 1].scatter(decoded_latent_alpha_x_scalar[i].flatten(), alpha_decoded_latent_x_scalar[i].flatten(),
                           alpha=0.5, s=1)
-    axs[0, 1].plot([0, 1], [0, 1], 'r--')
+    max_val = max(decoded_latent_alpha_x_scalar.max(), alpha_decoded_latent_x_scalar.max())
+    min_val = min(decoded_latent_alpha_x_scalar.min(), alpha_decoded_latent_x_scalar.min())
+    axs[0, 1].plot([min_val, max_val], [min_val, max_val], 'r--')
     axs[0, 1].set_title("Homogeneity Property:\n" + r"$f(\alpha z_x) = \alpha f(z_x)$")
     axs[0, 1].set_xlabel(r"$f(\alpha z_x)$")
     axs[0, 1].set_ylabel(r"$\alpha f(z_x)$")

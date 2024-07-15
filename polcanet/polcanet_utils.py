@@ -78,6 +78,19 @@ def custom_weight_init(m):
                 m.bias.fill_(0.0)
 
 
+class MeanCentering(nn.Module):
+    def __init__(self):
+        super(MeanCentering, self).__init__()
+
+    @staticmethod
+    def forward(x):
+        # Compute the mean of each batch
+        batch_mean = torch.mean(x, dim=0, keepdim=True)
+        # Subtract the mean from the input
+        x_centered = x - batch_mean
+        return x_centered
+
+
 class LinearDecoder(nn.Module):
     """
         A linear decoder module for an autoencoder.
@@ -136,11 +149,15 @@ class LinearDecoder(nn.Module):
         for i in range(num_layers - 1):
             if i == 0:
                 layer = nn.Linear(input_dim, hidden_dim)
+
                 # Apply custom weight initialization to the first layer only
                 custom_weight_init(layer)
                 layers.append(layer)
+
             else:
                 layers.append(nn.Linear(hidden_dim, hidden_dim))
+
+            layers.append(MeanCentering())
 
         layers.append(nn.Linear(hidden_dim, self.prod_input_dim))
         self.decoder = nn.Sequential(*layers)

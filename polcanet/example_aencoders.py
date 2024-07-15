@@ -83,7 +83,7 @@ class DenseAutoEncoder(nn.Module):
     """
 
     def __init__(self, input_dim: int | list | tuple, latent_dim: int, hidden_dim: int | list | tuple, num_layers=3,
-                 act_fn=nn.Mish()):
+                 act_fn=nn.Mish):
         super().__init__()
         # check if input_dim is instance of iterable in such a case take the first argument only
         if isinstance(input_dim, (list, tuple)):
@@ -104,7 +104,7 @@ class DenseAutoEncoder(nn.Module):
         torch.nn.init.orthogonal_(layer.weight)
 
         layers_encoder.append(layer)
-        layers_encoder.append(act_fn)
+        layers_encoder.append(act_fn())
         for i in range(1, num_layers):
             layer = nn.Linear(hidden_dim[i - 1], hidden_dim[i])
             torch.nn.init.orthogonal_(layer.weight)
@@ -112,7 +112,7 @@ class DenseAutoEncoder(nn.Module):
                 layer = ResNet(layer)
             layers_encoder.append(layer)
             layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            layers_encoder.append(act_fn)
+            layers_encoder.append(act_fn())
 
         layer = nn.Linear(hidden_dim[-1], latent_dim)
         torch.nn.init.orthogonal_(layer.weight)
@@ -126,7 +126,7 @@ class DenseAutoEncoder(nn.Module):
         torch.nn.init.orthogonal_(layer.weight)
 
         layers_decoder.append(layer)
-        layers_decoder.append(act_fn)
+        layers_decoder.append(act_fn())
         for i in range(1, num_layers):
             layer = nn.Linear(reversed_hidden_dim[i - 1], reversed_hidden_dim[i])
             torch.nn.init.orthogonal_(layer.weight)
@@ -134,7 +134,7 @@ class DenseAutoEncoder(nn.Module):
                 layer = ResNet(layer)
             layers_decoder.append(layer)
             layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            layers_decoder.append(act_fn)
+            layers_decoder.append(act_fn())
 
         layer = nn.Linear(reversed_hidden_dim[-1], input_dim)
         torch.nn.init.orthogonal_(layer.weight)
@@ -197,7 +197,7 @@ class LSTMDecoder(nn.Module):
 
 
 class ConvAutoencoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, conv_dim=2):
+    def __init__(self, input_dim, latent_dim, conv_dim=2,act_fn=nn.Mish):
         super(ConvAutoencoder, self).__init__()
         self.conv_dim = conv_dim
 
@@ -221,10 +221,10 @@ class ConvAutoencoder(nn.Module):
         else:
             raise ValueError("conv_dim must be 1 or 2")
 
-        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), nn.Mish(),
-                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), nn.Mish(),
-                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), nn.Mish(),
-                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), nn.Mish(),
+        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), act_fn(),
+                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), act_fn(),
+                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), act_fn(),
+                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), act_fn(),
                                      FlattenLayer())
 
         self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
@@ -266,9 +266,9 @@ def autoencoder_factory(autoencoder_type, input_dim, latent_dim, hidden_dim=None
             raise ValueError("seq_len must be provided for LSTMAutoencoder.")
         return LSTMAutoencoder(input_dim, latent_dim, seq_len, num_layers)
     elif autoencoder_type == "conv1d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=1)
+        return ConvAutoencoder(input_dim, latent_dim, conv_dim=1,act_fn=act_fn)
     elif autoencoder_type == "conv2d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=2)
+        return ConvAutoencoder(input_dim, latent_dim, conv_dim=2,act_fn=act_fn)
     else:
         raise ValueError(f"Unknown autoencoder_type: {autoencoder_type}")
 
