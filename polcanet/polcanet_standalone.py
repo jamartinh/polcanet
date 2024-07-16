@@ -196,7 +196,7 @@ class PolcaNet(nn.Module):
                 mask = np.concatenate([mask, np.zeros(z.shape[1] - len(mask))])
 
             z = np.where(mask == 0, self.mean_metrics, z)
-        with torch.torch.inference_mode():
+        with torch.inference_mode():
             z = torch.tensor(z, dtype=torch.float32, device=self.device)
             r = self.decoder.decode(z)
             r = self.scaler.inverse_transform(r)

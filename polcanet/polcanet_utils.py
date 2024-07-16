@@ -91,6 +91,15 @@ class MeanCentering(nn.Module):
         return x_centered
 
 
+class NoActivation(nn.Module):
+    def __init__(self):
+        super(NoActivation, self).__init__()
+
+    @staticmethod
+    def forward(x):
+        return x
+
+
 class LinearDecoder(nn.Module):
     """
         A linear decoder module for an autoencoder.
@@ -138,8 +147,9 @@ class LinearDecoder(nn.Module):
             torch.Size([5, 20])
     """
 
-    def __init__(self, latent_dim, input_dim, hidden_dim=256, num_layers=1):
+    def __init__(self, latent_dim, input_dim, hidden_dim=256, num_layers=1, act_fn=None):
         super().__init__()
+        act_fn = act_fn or NoActivation
         self.latent_dim = latent_dim
         self.input_dim = input_dim
         self.prod_input_dim = int(torch.prod(torch.tensor(input_dim)))
@@ -149,15 +159,14 @@ class LinearDecoder(nn.Module):
         for i in range(num_layers - 1):
             if i == 0:
                 layer = nn.Linear(input_dim, hidden_dim)
-
                 # Apply custom weight initialization to the first layer only
-                custom_weight_init(layer)
+                # custom_weight_init(layer)
                 layers.append(layer)
 
             else:
                 layers.append(nn.Linear(hidden_dim, hidden_dim))
 
-            layers.append(MeanCentering())
+            layers.append(act_fn())
 
         layers.append(nn.Linear(hidden_dim, self.prod_input_dim))
         self.decoder = nn.Sequential(*layers)

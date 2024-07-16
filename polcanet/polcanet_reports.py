@@ -460,16 +460,16 @@ def variance_test_analysis(model, data, num_samples=1000):
     ax.set_xlabel('Normalized Variance')
     # increase the limit of x-axis
     x_axis_lim = np.max(normalized_variances[:top_n])
-    ax.set_xlim(0, x_axis_lim+0.2)
+    ax.set_xlim(0, x_axis_lim + 0.2)
 
     ax.set_yticks(range(1, top_n + 1), labels=range(1, top_n + 1))
     ax.invert_yaxis()  # labels read top-to-bottom
     # Add the value to each bar at the middle
-    for i, (v1,v2) in enumerate(zip(normalized_variances[:top_n], cumulative_variance[:top_n])):
+    for i, (v1, v2) in enumerate(zip(normalized_variances[:top_n], cumulative_variance[:top_n])):
         # make the text color black an appearing as a percentage
-        ax.text(x_axis_lim+0.015, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
+        ax.text(x_axis_lim + 0.015, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
                 fontsize=8)
-        ax.text(x_axis_lim+0.075, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
+        ax.text(x_axis_lim + 0.075, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
                 fontsize=8)
 
     plt.tight_layout()
@@ -478,7 +478,7 @@ def variance_test_analysis(model, data, num_samples=1000):
 
 def linearity_tests_analysis(model, data, num_samples=100):
     """
-    Analyze the linearity properties of the autoencoder.
+    Analyze the linearity properties of the autoencoder's decoder.
 
     Parameters:
     - encoder: The autoencoder encoder instance
