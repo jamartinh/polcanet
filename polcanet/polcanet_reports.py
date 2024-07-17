@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import torch
 from matplotlib import pyplot as plt
 from scipy.stats import gaussian_kde
 from sklearn.metrics.pairwise import cosine_similarity
@@ -476,40 +477,39 @@ def variance_test_analysis(model, data, num_samples=1000):
     plt.show()
 
 
-def linearity_tests_analysis(model, data, num_samples=100):
+def linearity_tests_model(model, x: torch.Tensor, y: torch.Tensor):
     """
-    Analyze the linearity properties of the autoencoder's decoder.
+    This function plays with the parameters x and y to verify if the model is a linear mapping
+    that is, that the model fulfills the additivity and homogeneity properties of a linear mapping
 
-    Parameters:
-    - encoder: The autoencoder encoder instance
-    - data: Input data (numpy array)
-    - num_samples: Number of samples to test (default: 100)
+    x is a tensor of n samples and y is a tensor of n samples as well
+
     """
-    # Select random samples from the data
-    indices = np.random.choice(data.shape[0], num_samples, replace=False)
-    x_samples = data[indices]
-    y_samples = data[np.random.choice(data.shape[0], num_samples, replace=False)]
 
-    # Encode the samples
-    latent_x = model.encode(x_samples)
-    latent_y = model.encode(y_samples)
+    num_samples = min(x.shape[0], y.shape[0])  # Number of samples to use for testing
 
-    # Additive property test
-    latent_x_plus_y = latent_x + latent_y
-    decoded_latent_x_plus_y = model.decode(latent_x_plus_y)
-    decoded_latent_x = model.decode(latent_x)
-    decoded_latent_y = model.decode(latent_y)
-    decoded_latent_x_plus_decoded_latent_y = decoded_latent_x + decoded_latent_y
+    with torch.no_grad():
+        # Additive property test
+        x_plus_y = x + y
+        f_x_plus_y = model(x_plus_y)
+        f_x = model(x)
+        f_y = model(y)
+        f_x_plus_f_y = f_x + f_y
 
-    # Homogeneity property test with scalar alpha
-    alpha_scalar = np.random.uniform(0.1, 2.0)  # Random scalar value
-    latent_alpha_x_scalar = alpha_scalar * latent_x
-    decoded_latent_alpha_x_scalar = model.decode(latent_alpha_x_scalar)
-    alpha_decoded_latent_x_scalar = alpha_scalar * decoded_latent_x
+        # Homogeneity property test with scalar alpha
+        alpha_scalar = np.random.uniform(0.1, 2.0)  # Random scalar value
+        alpha_x_scalar = alpha_scalar * x
+        f_alpha_x_scalar = model(alpha_x_scalar)
+        alpha_x_f_x = alpha_scalar * f_x
 
     # Calculate differences for reporting
-    differences_additive = np.abs(decoded_latent_x_plus_y - decoded_latent_x_plus_decoded_latent_y)
-    differences_homogeneity_scalar = np.abs(decoded_latent_alpha_x_scalar - alpha_decoded_latent_x_scalar)
+    f_x_plus_y = f_x_plus_y.detach().cpu().numpy()
+    f_x_plus_f_y = f_x_plus_f_y.detach().cpu().numpy()
+    f_alpha_x_scalar = f_alpha_x_scalar.detach().cpu().numpy()
+    alpha_x_f_x = alpha_x_f_x.detach().cpu().numpy()
+
+    differences_additive = np.abs(f_x_plus_y - f_x_plus_f_y)
+    differences_homogeneity_scalar = np.abs(f_alpha_x_scalar - alpha_x_f_x)
 
     # Reporting text with statistics
     report = f"""
@@ -557,34 +557,34 @@ def linearity_tests_analysis(model, data, num_samples=100):
 
     # Additive property plot
     for i in range(10):  # Plot first 10 samples
-        axs[0, 0].scatter(decoded_latent_x_plus_y[i].flatten(), decoded_latent_x_plus_decoded_latent_y[i].flatten(),
+        axs[0, 0].scatter(f_x_plus_y[i].flatten(), f_x_plus_f_y[i].flatten(),
                           alpha=0.5, s=1)
-    max_val = max(decoded_latent_x_plus_y.max(), decoded_latent_x_plus_decoded_latent_y.max())
-    min_val = min(decoded_latent_x_plus_y.min(), decoded_latent_x_plus_decoded_latent_y.min())
+    max_val = max(f_x_plus_y.max(), f_x_plus_f_y.max())
+    min_val = min(f_x_plus_y.min(), f_x_plus_f_y.min())
     axs[0, 0].plot([min_val, max_val], [min_val, max_val], 'r--')
     axs[0, 0].set_title("Additive Property:\n " + r"$f(z_x + z_y) = f(z_x) + f(z_y)$")
     axs[0, 0].set_xlabel(r"$f(z_x + z_y)$")
     axs[0, 0].set_ylabel(r"$f(z_x) + f(z_y)$")
     # Add correlation legend to the plot
     axs[0, 0].text(0.5, 0.1,
-                   f"Correlation: {np.corrcoef(decoded_latent_x_plus_y.flatten(),
-                                               decoded_latent_x_plus_decoded_latent_y.flatten())[0, 1]:.4f}",
+                   f"Correlation: {np.corrcoef(f_x_plus_y.flatten(),
+                                               f_x_plus_f_y.flatten())[0, 1]:.4f}",
                    ha='center', va='center', transform=axs[0, 0].transAxes, fontsize=8)
 
     # Homogeneity property plot (scalar alpha)
     for i in range(10):  # Plot first 10 samples
-        axs[0, 1].scatter(decoded_latent_alpha_x_scalar[i].flatten(), alpha_decoded_latent_x_scalar[i].flatten(),
+        axs[0, 1].scatter(f_alpha_x_scalar[i].flatten(), alpha_x_f_x[i].flatten(),
                           alpha=0.5, s=1)
-    max_val = max(decoded_latent_alpha_x_scalar.max(), alpha_decoded_latent_x_scalar.max())
-    min_val = min(decoded_latent_alpha_x_scalar.min(), alpha_decoded_latent_x_scalar.min())
+    max_val = max(f_alpha_x_scalar.max(), alpha_x_f_x.max())
+    min_val = min(f_alpha_x_scalar.min(), alpha_x_f_x.min())
     axs[0, 1].plot([min_val, max_val], [min_val, max_val], 'r--')
     axs[0, 1].set_title("Homogeneity Property:\n" + r"$f(\alpha z_x) = \alpha f(z_x)$")
     axs[0, 1].set_xlabel(r"$f(\alpha z_x)$")
     axs[0, 1].set_ylabel(r"$\alpha f(z_x)$")
     # Add correlation legend to the plot
     axs[0, 1].text(0.5, 0.1,
-                   f"Correlation: {np.corrcoef(decoded_latent_alpha_x_scalar.flatten(),
-                                               alpha_decoded_latent_x_scalar.flatten())[0, 1]:.4f}",
+                   f"Correlation: {np.corrcoef(f_alpha_x_scalar.flatten(),
+                                               alpha_x_f_x.flatten())[0, 1]:.4f}",
                    ha='center', va='center', transform=axs[0, 1].transAxes, fontsize=8)
 
     # Difference plots for additive property
@@ -601,3 +601,32 @@ def linearity_tests_analysis(model, data, num_samples=100):
 
     plt.tight_layout()
     plt.show()
+
+
+def get_data_samples(model, data, num_samples):
+    """
+    Get random samples from the data and encode them using the autoencoder.
+    """
+    indices = np.random.choice(data.shape[0], num_samples, replace=False)
+    x_samples = data[indices]
+    y_samples = data[np.random.choice(data.shape[0], num_samples, replace=False)]
+    # Encode the samples
+    latent_x = model.encode(x_samples)
+    latent_y = model.encode(y_samples)
+    return latent_x, latent_y
+
+
+def linearity_tests_analysis(model, data, num_samples=1000):
+    """
+        Analyze the linearity properties of the autoencoder's decoder.
+
+        Parameters:
+        - encoder: The autoencoder encoder instance
+        - data: Input data (numpy array)
+        - num_samples: Number of samples to test (default: 100)
+        """
+    num_samples = min(num_samples, data.shape[0])
+    latent_x, latent_y = get_data_samples(model, data, num_samples)
+    latent_x = torch.tensor(latent_x, dtype=torch.float32, device=model.device)
+    latent_y = torch.tensor(latent_y, dtype=torch.float32, device=model.device)
+    linearity_tests_model(model.decoder, latent_x, latent_y)
