@@ -87,7 +87,7 @@ class DenseAutoEncoder(nn.Module):
         super().__init__()
         # check if input_dim is instance of iterable in such a case take the first argument only
         if isinstance(input_dim, (list, tuple)):
-            input_dim = input_dim[0]
+            input_dim = np.prod(input_dim)
 
         self.latent_dim = latent_dim
         layers_encoder = []
@@ -101,21 +101,21 @@ class DenseAutoEncoder(nn.Module):
         assert len(hidden_dim) == num_layers, "The length of hidden_dim must be equal to num_layers."
 
         layer = nn.Linear(input_dim, hidden_dim[0])
-        torch.nn.init.orthogonal_(layer.weight)
+        # torch.nn.init.orthogonal_(layer.weight)
 
         layers_encoder.append(layer)
         layers_encoder.append(act_fn())
         for i in range(1, num_layers):
             layer = nn.Linear(hidden_dim[i - 1], hidden_dim[i])
-            torch.nn.init.orthogonal_(layer.weight)
-            if hidden_dim[i - 1] == hidden_dim[i]:
-                layer = ResNet(layer)
+            # torch.nn.init.orthogonal_(layer.weight)
+            # if hidden_dim[i - 1] == hidden_dim[i]:
+            #     layer = ResNet(layer)
             layers_encoder.append(layer)
-            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
+            # layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
             layers_encoder.append(act_fn())
 
         layer = nn.Linear(hidden_dim[-1], latent_dim)
-        torch.nn.init.orthogonal_(layer.weight)
+        # torch.nn.init.orthogonal_(layer.weight)
         layers_encoder.append(layer)
 
         self.encoder = nn.Sequential(*layers_encoder)
@@ -151,6 +151,8 @@ class DenseAutoEncoder(nn.Module):
         return reconstruction
 
     def encode(self, x):
+        # flatten all dimensions of x except from the batch dim
+        x = x.view(x.size(0), -1)
         z = self.encoder(x)
         return z
 
@@ -197,7 +199,7 @@ class LSTMDecoder(nn.Module):
 
 
 class ConvAutoencoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, conv_dim=2,act_fn=nn.Mish):
+    def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=nn.Mish):
         super(ConvAutoencoder, self).__init__()
         self.conv_dim = conv_dim
 
@@ -221,11 +223,16 @@ class ConvAutoencoder(nn.Module):
         else:
             raise ValueError("conv_dim must be 1 or 2")
 
+        scale = np.prod(self.flattened_size)
         self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), act_fn(),
                                      ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), act_fn(),
                                      ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), act_fn(),
                                      ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     FlattenLayer())
+                                     FlattenLayer(),
+                                     nn.Linear(latent_dim * scale, latent_dim * scale), act_fn(),
+                                     nn.Linear(latent_dim * scale, latent_dim * scale), act_fn(),
+                                     nn.Linear(latent_dim * scale, latent_dim * scale),
+                                     )
 
         self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
                                      ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
@@ -266,9 +273,9 @@ def autoencoder_factory(autoencoder_type, input_dim, latent_dim, hidden_dim=None
             raise ValueError("seq_len must be provided for LSTMAutoencoder.")
         return LSTMAutoencoder(input_dim, latent_dim, seq_len, num_layers)
     elif autoencoder_type == "conv1d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=1,act_fn=act_fn)
+        return ConvAutoencoder(input_dim, latent_dim, conv_dim=1, act_fn=act_fn)
     elif autoencoder_type == "conv2d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=2,act_fn=act_fn)
+        return ConvAutoencoder(input_dim, latent_dim, conv_dim=2, act_fn=act_fn)
     else:
         raise ValueError(f"Unknown autoencoder_type: {autoencoder_type}")
 
