@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import torch
 from torch import nn as nn
 
@@ -142,7 +143,7 @@ class LinearDecoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.input_dim = input_dim
-        self.prod_input_dim = int(torch.prod(torch.tensor(input_dim)))
+        self.prod_input_dim = int(np.prod(input_dim))
 
         layers = []
         input_dim = latent_dim

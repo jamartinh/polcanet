@@ -129,7 +129,7 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
 
     # Plot histogram of errors
     plt.figure()
-    plt.hist(errors, bins=50, density=True, alpha=0.7)
+    plt.hist(errors, bins=50, density=True, alpha=0.7,fill=False, color="black")
     plt.xlabel('Reconstruction Error (MSE)')
     plt.ylabel('Density')
     plt.title('Distribution of Reconstruction Errors')
@@ -139,17 +139,17 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
         try:
             kde = gaussian_kde(errors)
             x_range = np.linspace(errors.min(), errors.max(), 1000)
-            plt.plot(x_range, kde(x_range), 'r-', lw=2)
+            plt.plot(x_range, kde(x_range), 'k-', lw=1)
         except np.linalg.LinAlgError:
             print("Warning: Couldn't compute KDE due to singular matrix. Showing histogram only.")
 
     # Add vertical line for mean error
     mean_error = np.mean(errors)
-    plt.axvline(mean_error, color='g', linestyle='--', label=f'Mean Error: {mean_error:.4f}')
+    plt.axvline(mean_error, color='gray', linestyle='--', label=f'Mean Error: {mean_error:.4f}',lw=1)
 
     # Add vertical line for median error
     median_error = np.median(errors)
-    plt.axvline(median_error, color='r', linestyle=':', label=f'Median Error: {median_error:.4f}')
+    plt.axvline(median_error, color='r', linestyle=':', label=f'Median Error: {median_error:.4f}',lw=1)
 
     plt.legend()
     plt.show()
@@ -181,13 +181,13 @@ def plot_scatter_corr_matrix(model, latents=None, data=None, n_components=5, max
             x = df.iloc[:, j]
             y = df.iloc[:, i]
 
-            axes[i - 1, j].scatter(x, y, alpha=0.5, s=1)
+            axes[i - 1, j].scatter(x, y, alpha=0.7, s=1, color="black")
             if i == num_vars - 1:
                 axes[i - 1, j].set_xlabel(f'$x_{j}$')
             if j == 0:
                 axes[i - 1, j].set_ylabel(f'$x_{i}$')
 
-                # Remove axis ticks
+            # Remove axis ticks
             axes[i - 1, j].set_xticks([])
             axes[i - 1, j].set_yticks([])
             axes[i - 1, j].spines['top'].set_visible(False)
@@ -425,7 +425,7 @@ def variance_test_analysis(model, data, num_samples=1000):
 
     # Plot variance distribution and exponential fit
     fig, ax = plt.subplots()
-    ax.plot(components, normalized_variances, 'o-', label='Normalized Variances')
+    ax.plot(components, normalized_variances, 'o-', label='Normalized Variances', color='black', alpha=0.7, linewidth=1, markersize=2)
     ax.plot(components, exp_fit, 'r--', label='Exponential Fit')
     ax.set_title('Variance Distribution and Exponential Fit')
     ax.set_xlabel('Latent Components')
@@ -437,7 +437,7 @@ def variance_test_analysis(model, data, num_samples=1000):
     # Plot cumulative variance
     cumulative_variance = np.cumsum(normalized_variances)
     fig, ax = plt.subplots()
-    ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance')
+    ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance',color='black', alpha=0.7, linewidth=1, markersize=2)
     ax.set_title('Cumulative Variance of Latent Components')
     ax.set_xlabel('Latent Components')
     ax.set_ylabel('Cumulative Variance')
@@ -475,6 +475,75 @@ def variance_test_analysis(model, data, num_samples=1000):
 
     plt.tight_layout()
     plt.show()
+
+
+# Function to evaluate and plot for higher dimensional input with 3-layer model
+# Function to evaluate and plot for higher dimensional input with 3-layer model
+def evaluate_and_plot(model, x, y):
+    model.eval()
+    shape = x.shape
+    num_samples = shape[0]
+    x = x.view(num_samples, -1)
+    y = y.view(num_samples, -1)
+
+    def f(z):
+        return model(z).detach().view(num_samples, -1)
+
+    with torch.no_grad():
+        # Test Additivity
+        xx = f(x + y)
+        fx_shape = xx.shape
+        yy = f(x) + f(y)
+        xx = xx.cpu().numpy().flatten()
+        yy = yy.cpu().numpy().flatten()
+        additivity_corr = np.corrcoef(xx, yy)[0, 1]
+
+        # Test Homogeneity
+        #     Generate alpha values between -2 and 2
+        alpha = torch.linspace(-1, 1, steps=num_samples, device=x.device).unsqueeze(1)
+        xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
+        alpha = alpha.repeat(1, fx_shape[1])
+        yy_alpha = alpha * f(x)
+        xx_alpha = xx_alpha.cpu().numpy().flatten()
+        yy_alpha = yy_alpha.cpu().numpy().flatten()
+        alpha_colors = alpha.cpu().numpy().flatten()
+        homogeneity_corr = np.corrcoef(xx_alpha, yy_alpha)[0, 1]
+
+    # Additivity plot
+    # Plotting
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1)
+    min_val = min(xx.min(), yy.min())
+    max_val = max(xx.max(), yy.max())
+    ax1.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
+    ax1.set_xlabel(r"$f(x + y)$")
+    ax1.set_ylabel(r"$f(x) + f(y)$")
+    ax1.set_title(f"Additivity\n correlation: {additivity_corr:.4f}")
+    # # Add horizontal and vertical lines at 0
+    ax1.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
+    ax1.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
+    ax1.set_aspect("equal")
+
+    # Homogeneity plot
+    scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1)
+    min_val = min(xx_alpha.min(), yy_alpha.min())
+    max_val = max(xx_alpha.max(), yy_alpha.max())
+    ax2.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
+    ax2.set_xlabel(r"$f(\alpha x)$")
+    ax2.set_ylabel(r"$\alpha f(x)$")
+    ax2.set_title(f"Homogeneity\n correlation: {homogeneity_corr:.4f}")
+    ax2.set_aspect("equal")
+
+    # # Add colorbar for alpha values
+    cbar = fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
+
+    # # Add horizontal and vertical lines at 0
+    ax2.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
+    ax2.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
+
+    plt.tight_layout()
+    plt.show()
+    return additivity_corr, homogeneity_corr
 
 
 def linearity_tests_model(model, x: torch.Tensor, y: torch.Tensor):
@@ -629,4 +698,5 @@ def linearity_tests_analysis(model, data, num_samples=1000):
     latent_x, latent_y = get_data_samples(model, data, num_samples)
     latent_x = torch.tensor(latent_x, dtype=torch.float32, device=model.device)
     latent_y = torch.tensor(latent_y, dtype=torch.float32, device=model.device)
-    linearity_tests_model(model.decoder, latent_x, latent_y)
+    # linearity_tests_model(model.decoder, latent_x, latent_y)
+    evaluate_and_plot(model.decoder, latent_x, latent_y)
