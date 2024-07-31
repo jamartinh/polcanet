@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
-from polcanet.polcanet_utils import FakeScaler
+from polcanet.polcanet_utils import FakeScaler, EncoderWrapper
 
 
 class PolcaNetLoss(nn.Module):
@@ -28,10 +28,18 @@ class PolcaNetLoss(nn.Module):
         self.register_buffer('a', axis / axis.shape[0])  # normalized axis
 
         target_decay = torch.exp(-decay_rate * torch.arange(latent_dim, dtype=torch.float32))
-        self.register_buffer('ne', torch.exp(-0.1 * torch.arange(latent_dim, dtype=torch.float32)))
+        # self.register_buffer('ne', torch.exp(-0.5 * torch.arange(latent_dim, dtype=torch.float32)))
         self.register_buffer('t', F.normalize(target_decay, p=1.0, dim=0))  # normalized target decay
+        # self.register_buffer('I', 1-torch.eye(latent_dim))  # identity matrix
 
-        self.register_buffer('I', torch.eye(latent_dim))  # identity matrix
+        self.loss_names = {
+                "loss": "Total Loss",
+                "rec": "Reconstruction Loss",
+                "ort": "Orthogonality Loss",
+                "com": "Center of Mass Loss",
+                "var": "Variance Distribution Loss"
+
+        }
 
     def forward(self, z, r, x):
         """
@@ -56,22 +64,20 @@ class PolcaNetLoss(nn.Module):
         # Reconstruction loss
         # Purpose: Ensure the model can accurately reconstruct the input data
         # Method: Mean Squared Error between input and reconstruction
-        L1 = F.mse_loss(r, x)
+        L_rec = F.mse_loss(r, x)
 
         # Orthogonality loss
         # Purpose: Encourage latent dimensions to be uncorrelated
         # Method: Penalize off-diagonal elements of the cosine similarity matrix
         if self.alpha != 0:
-            # n = z.shape[1]
-            Z = F.normalize(z, p=2, dim=0)
-            S = torch.mm(Z.t(), Z * self.ne)
-            idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[0], offset=1)  # indices of triu w/o diagonal
-            S_triu = S[idx0, idx1]
-            L2 = torch.mean(S_triu ** 2)
-        else:
-            L2 = torch.tensor([0], dtype=torch.float32, device=x.device)
 
-        # L2 = ((S ** 2) * (1 - self.I)).sum() / (n * (n - 1))
+            Z = F.normalize(z, p=2, dim=0)
+            S = torch.mm(Z.t(), Z)
+            idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
+            S_triu = S[idx0, idx1]
+            L_ort = torch.mean(S_triu ** 2)
+        else:
+            L_ort = torch.tensor([0], dtype=torch.float32, device=x.device)
 
         # Compute and normalize variance
         v = torch.var(z, dim=0)
@@ -81,24 +87,33 @@ class PolcaNetLoss(nn.Module):
         # Purpose: Concentrate information in earlier latent dimensions
         # Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
         if self.beta != 0:
-            L3 = torch.mean(w * self.a)
+            L_com = torch.mean(w * self.a)
         else:
-            L3 = torch.tensor([0], dtype=torch.float32, device=x.device)
+            L_com = torch.tensor([0], dtype=torch.float32, device=x.device)
 
         # Exponential decay variance loss
         # Purpose: Encourage an exponential decay of variances across latent dimensions
         # Method: Minimize the difference between normalized variances and a target exponential decay
         if self.gamma != 0:
-            L4 = F.mse_loss(w, self.t)
+            L_var = F.mse_loss(w, self.t)
         else:
-            L4 = torch.tensor([0], dtype=torch.float32, device=x.device)
+            L_var = torch.tensor([0], dtype=torch.float32, device=x.device)
+
+        # Soft sorting variance loss
+        # if self.gamma != 0:
+        #     # Compute differences between successive variances
+        #     diff = torch.diff(v)
+        #     # Penalize positive differences
+        #     L_var = torch.mean(F.relu(-diff) ** 2)
+        # else:
+        #     L_var = torch.tensor([0], dtype=torch.float32, device=x.device)
 
         # Combine losses
         # Purpose: Balance all loss components for optimal latent representation
         # Method: Weighted sum of individual losses
-        L = L1 + self.alpha * L2 + self.beta * L3 + self.gamma * L4
+        L = L_rec + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + v.mean()
 
-        return L, (L1, L2, L3, L4)
+        return L, (L_rec, L_ort, L_com, L_var)
 
 
 class PolcaNet(nn.Module):
@@ -149,7 +164,7 @@ class PolcaNet(nn.Module):
         self.gamma = gamma
         self.device = torch.device(device)
 
-        self.encoder = encoder
+        self.encoder = EncoderWrapper(encoder)
         self.decoder = decoder
 
         if hasattr(self.encoder, "decoder"):
@@ -167,21 +182,11 @@ class PolcaNet(nn.Module):
         self.mean_metrics = None
         self.r_mean_metrics = None
 
-        # Loss names
-        self.aux_loss_names = {
-                "loss": "Total Loss",
-                "rec": "Reconstruction Loss",
-                "ort": "Orthogonality Loss",
-                "com": "Center of Mass Loss",
-                "var": "Variance Distribution Loss"
-
-        }
         self.polcanet_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma)
 
-    def forward(self, x, mask=None):
-        latent = self.encoder.encode(x)
-        latent = latent
-        reconstruction = self.decoder.decode(latent)
+    def forward(self, x):
+        latent = self.encoder(x)
+        reconstruction = self.decoder(latent)
         return latent, reconstruction
 
     def predict(self, in_x, mask=None):
@@ -197,8 +202,7 @@ class PolcaNet(nn.Module):
             else:
                 x = torch.tensor(in_x, dtype=torch.float32, device=self.device, requires_grad=False)
             x = self.scaler.transform(x)
-            latent = self.encoder.encode(x)
-            # latent = self.middleware(latent)
+            latent = self.encoder(x)
             z = latent
 
         return z.detach().cpu().numpy()
@@ -213,7 +217,7 @@ class PolcaNet(nn.Module):
             z = np.where(mask == 0, self.mean_metrics, z)
         with torch.inference_mode():
             z = torch.tensor(z, dtype=torch.float32, device=self.device)
-            r = self.decoder.decode(z)
+            r = self.decoder(z)
             r = self.scaler.inverse_transform(r)
             r = r.detach().cpu().numpy()
         return r
@@ -264,7 +268,7 @@ class PolcaNet(nn.Module):
         # pretty print final metrics stats
         print(f"Final metrics at epoch: {epoch}")
         for k, v in metrics.items():
-            print(f"{self.aux_loss_names[k]}: {v:.4g}")
+            print(f"{self.polcanet_loss.loss_names[k]}: {v:.4g}")
 
     def fitter(self, data: np.ndarray | torch.Tensor, batch_size=512, num_epochs=100, lr=1e-3):
         num_samples: int = len(data)
@@ -278,7 +282,7 @@ class PolcaNet(nn.Module):
         self.scaler.to(self.device)
 
         # Create the optimizer
-        optimizer = torch.optim.AdamW(self.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         for epoch in range(num_epochs):
             losses = defaultdict(list)
@@ -289,7 +293,7 @@ class PolcaNet(nn.Module):
                 loss, aux_losses = self.learn_step(x, optimizer)
 
                 losses["loss"].append(loss.item())
-                for aux_loss, name in enumerate(list(self.aux_loss_names)[1:]):
+                for aux_loss, name in enumerate(list(self.polcanet_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[aux_loss].item())
 
             metrics = {name: np.mean(losses[name]) for name in losses}
@@ -318,66 +322,3 @@ class PolcaNet(nn.Module):
     #     corr_matrix_triu = x_triu
     #     corr_loss = torch.mean(corr_matrix_triu.pow(2))
     #     return corr_loss
-    #
-    # @staticmethod
-    # def orthogonality_loss(latent: torch.Tensor):
-    #     # Normalize each column (feature)
-    #     normalized = nn.functional.normalize(latent, p=2, dim=0)
-    #
-    #     # Calculate pairwise cosine similarity
-    #     cosine_sim = torch.mm(normalized.t(), normalized)
-    #
-    #     # Create a mask to ignore the diagonal (self-similarity)
-    #     mask = torch.eye(cosine_sim.shape[0], device=cosine_sim.device)
-    #
-    #     # Square the cosine similarities to penalize both positive and negative correlations
-    #     # and mask out the diagonal
-    #     loss = (cosine_sim ** 2) * (1 - mask)
-    #
-    #     # Sum all pairwise losses and normalize by the number of pairs
-    #     n = cosine_sim.shape[0]
-    #     total_loss = loss.sum() / (n * (n - 1))
-    #
-    #     return total_loss
-    #
-    # @staticmethod
-    # def center_of_mass_loss(latent):
-    #     """Calculate center of mass loss"""
-    #     axis = torch.arange(0, latent.shape[1], device=latent.device, dtype=torch.float32) ** 2
-    #     std_latent = torch.var(latent, dim=0)
-    #
-    #     w = nn.functional.normalize(std_latent, p=1.0, dim=0)
-    #     com = w * axis / axis.shape[0]  # weight the latent space
-    #     loss = torch.mean(com)
-    #     return loss
-    #
-    # @staticmethod
-    # def exp_decay_var_loss(latent, decay_rate=0.5):
-    #     """Encourage exponential decay of variances"""
-    #     var_latent = torch.var(latent, dim=0)
-    #
-    #     # Create exponential decay target
-    #     target_decay = torch.exp(-decay_rate * torch.arange(latent.shape[1], device=latent.device, dtype=torch.float32))
-    #
-    #     # Normalize both to sum to 1 for fair comparison
-    #     var_latent_norm = var_latent / torch.sum(var_latent)
-    #     target_decay_norm = target_decay / torch.sum(target_decay)
-    #
-    #     return torch.nn.functional.mse_loss(var_latent_norm, target_decay_norm)
-    #
-    # def compute_loss(self, z, r, x):
-    #     # reconstruction loss
-    #     l1 = nn.functional.mse_loss(r, x)
-    #     # correlation loss
-    #     # l21 = self.cross_correlation_loss(z) if self.alpha != 0 else torch.tensor([0], dtype=torch.float32,
-    #     #                                                                                  device=x.device)
-    #     l2 = self.orthogonality_loss(z) if self.alpha != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
-    #     # l2 = l21 + l22
-    #     # ordering loss
-    #     l3 = self.center_of_mass_loss(z) if self.beta != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
-    #     # low variance loss
-    #     l4 = self.exp_decay_var_loss(z) if self.gamma != 0 else torch.tensor([0], dtype=torch.float32, device=x.device)
-    #
-    #     # mean_loss = (torch.mean(z, dim=0) - self.bias).pow(2).sum()
-    #     loss = l1 + self.alpha * l2 + self.beta * l3 + self.gamma * l4
-    #     return loss, (l1, l2, l3, l4)

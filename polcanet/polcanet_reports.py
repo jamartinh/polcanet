@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 from matplotlib import pyplot as plt
 from scipy.stats import gaussian_kde
@@ -129,7 +130,7 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
 
     # Plot histogram of errors
     plt.figure()
-    plt.hist(errors, bins=50, density=True, alpha=0.7,fill=False, color="black")
+    plt.hist(errors, bins=50, density=True, alpha=0.7, fill=False, color="black")
     plt.xlabel('Reconstruction Error (MSE)')
     plt.ylabel('Density')
     plt.title('Distribution of Reconstruction Errors')
@@ -145,11 +146,11 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
 
     # Add vertical line for mean error
     mean_error = np.mean(errors)
-    plt.axvline(mean_error, color='gray', linestyle='--', label=f'Mean Error: {mean_error:.4f}',lw=1)
+    plt.axvline(mean_error, color='gray', linestyle='--', label=f'Mean Error: {mean_error:.4f}', lw=1)
 
     # Add vertical line for median error
     median_error = np.median(errors)
-    plt.axvline(median_error, color='r', linestyle=':', label=f'Median Error: {median_error:.4f}',lw=1)
+    plt.axvline(median_error, color='r', linestyle=':', label=f'Median Error: {median_error:.4f}', lw=1)
 
     plt.legend()
     plt.show()
@@ -161,73 +162,84 @@ def analyze_reconstruction_error(model, data, n_samples=10000):
     print(f"Max Reconstruction Error: {np.max(errors):.4f}")
 
 
-def plot_scatter_corr_matrix(model, latents=None, data=None, n_components=5, max_samples=5000):
-    if latents is None and data is None:
-        raise ValueError("Either latents or data must be provided")
+def plot_scatter_corr_matrix(model=None, latents=None, data=None, n_components=5, max_samples=1000):
+    if latents is None and (data is None or model is None):
+        raise ValueError("Either latents or model= and data= must be provided")
 
     if latents is None:
         latents, reconstructed = model.predict(data)
 
-    df = pd.DataFrame(latents)
+    if latents.shape[0] > max_samples:
+        indices = np.random.choice(latents.shape[0], max_samples, replace=False)
+        latents = latents[indices]
 
-    if len(df) > max_samples:
-        df = df.sample(n=max_samples, random_state=42)
+    cos_sim = cosine_similarity(latents.T)
     num_vars = min(n_components, latents.shape[1])
-    fig, axes = plt.subplots(num_vars, num_vars, figsize=((num_vars * 1), (num_vars * 1)))
+    plot_corr_scatter(cos_sim, latents, num_vars)
+
+
+def plot_corr_scatter(corr_matrix, latents, n):
+    # Create a figure and a grid of subplots
+    fig, axes = plt.subplots(n - 1, n)
+
+    # Adjust spacing between plots
+    plt.subplots_adjust(wspace=0., hspace=0.)
+
+    # Generate a diverging color map
+    cmap = sns.diverging_palette(220, 20, as_cmap=True)
 
     # Loop over the indices to create scatter plots for the lower triangle
-    for i in range(1, num_vars):
+    for i in range(1, n):
         for j in range(i):
-            x = df.iloc[:, j]
-            y = df.iloc[:, i]
+            color = cmap((corr_matrix[i, j] + 1) / 2)  # Normalize corr_matrix values to [0, 1]
+            x = latents[:, j]
+            y = latents[:, i]
+            axes[i - 1, j].scatter(x, y, s=1.0, color=color)  # Make markers small
+            #axes[i - 1, j].set_facecolor(color)
 
-            axes[i - 1, j].scatter(x, y, alpha=0.7, s=1, color="black")
-            if i == num_vars - 1:
+            # Annotate correlation value if the number of variables is small
+
+            if n <= 5:
+                corr_text = f"{corr_matrix[i, j]:.2f}"
+                legend = axes[i - 1, j].legend([corr_text], loc='best')
+                frame = legend.get_frame()
+                frame.set_facecolor('white')
+                frame.set_edgecolor('black')
+                frame.set_alpha(0.2)
+                # Remove tick labels but show tick marks
+                axes[i - 1, j].set_xticklabels([])
+                axes[i - 1, j].set_yticklabels([])
+            else:
+                axes[i - 1, j].set_xticks([])
+                axes[i - 1, j].set_yticks([])
+
+
+            # Label the last row and first column
+            if i == n - 1:
                 axes[i - 1, j].set_xlabel(f'$x_{j}$')
             if j == 0:
                 axes[i - 1, j].set_ylabel(f'$x_{i}$')
 
-            # Remove axis ticks
-            axes[i - 1, j].set_xticks([])
-            axes[i - 1, j].set_yticks([])
-            axes[i - 1, j].spines['top'].set_visible(False)
-            axes[i - 1, j].spines['right'].set_visible(False)
+
+            # Set the legend for the Axes object
+
 
     # Hide the upper triangle and diagonal subplots
-    for i in range(num_vars):
-        for j in range(num_vars):
-            if i <= j:
-                axes[i - 1, j].axis('off')
+    for i in range(n):
+        for j in range(n):
+            if i < j:
+                axes[i, j].axis('off')
 
-    plt.suptitle("Scatter plot matrix of latent components")
-    plt.tight_layout()
-    plt.show()
+    # Add color bar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='vertical', fraction=0.02, pad=0.04, shrink= .5)
+    cbar.outline.set_edgecolor('none')  # Remove color bar border
 
+    # Add a main title
+    plt.suptitle("Cosine Similarity Matrix of Latent Features")
 
-def show_correlation_matrix(model, latents=None, data=None):
-    if latents is None and data is None:
-        raise ValueError("Either latents or data must be provided")
-
-    if latents is None:
-        latents, reconstructed = model.predict(data)
-
-    # Compute the correlation matrix
-    x_corr = np.corrcoef(latents.T)
-    corr = pd.DataFrame(x_corr)
-
-    # Set up the matplotlib figure
-    fig, ax = plt.subplots()
-
-    # Create the heatmap
-    cax = ax.matshow(corr, cmap='coolwarm', vmin=-1, vmax=1)
-
-    # Add colorbar for reference
-    fig.colorbar(cax)
-
-    # Add title
-    plt.title("Correlation Matrix of Latent Components")
-
-    # Show the plot
+    # Show plot
     plt.show()
 
 
@@ -312,13 +324,58 @@ def analyze_latent_space(model, data=None, latents=None):
     print("4. Detailed Component Analysis")
     print("-" * 30)
     top_n = min(10, n_components)  # Analyze top 10 components or all if less than 10
-    component_table = []
+
+    component_df = pd.DataFrame(
+        columns=["Component", "Variance Ratio", "Cumulative Variance", "Mean |Correlation| with Others"])
     for i in range(top_n):
-        component_table.append([i + 1, f"{explained_variance_ratio[i]:.4f}", f"{cumulative_variance_ratio[i]:.4f}",
-                                f"{np.nanmean(np.abs(corr[i, i + 1:])):.4f}"])
-    print(tabulate(component_table,
-                   headers=["Component", "Variance Ratio", "Cumulative Variance", "Mean |Correlation| with Others"]))
-    print()
+        corr_list = np.array([idx for idx in range(top_n) if idx != i])
+        component_df.loc[i] = {
+                "Component": i + 1,
+                "Variance Ratio": f"{explained_variance_ratio[i]:.4f}",
+                "Cumulative Variance": f"{cumulative_variance_ratio[i]:.4f}",
+                "Mean |Correlation| with Others": f"{np.mean(np.abs(corr[i, corr_list])):.4f}"
+        }
+
+    # print(component_df.to_string())
+    print(tabulate(component_df, headers="keys", tablefmt="grid", showindex=False))
+
+
+def plot_correlation_matrix(corr_matrix, threshold=15):
+    """
+    Plots a correlation matrix. If the matrix size is below the threshold,
+    it includes the correlation values in the cells; otherwise, it does not.
+
+    Parameters:
+    corr_matrix (pd.DataFrame): Correlation matrix to plot.
+    threshold (int): Size threshold to decide if cell values should be printed.
+    """
+    # Check if the input is a DataFrame
+    if not isinstance(corr_matrix, pd.DataFrame):
+        raise ValueError("The input must be a pandas DataFrame.")
+
+    # Mask for the upper triangle
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+
+    # Setup the matplotlib figure
+    fig, ax = plt.subplots()
+
+    # Generate a custom diverging colormap
+    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(corr_matrix, mask=mask, cmap=cmap, vmax=1.0, center=0,
+                square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=(corr_matrix.shape[0] <= threshold),
+                fmt='.2f', annot_kws={"size": 10})
+
+    # Add titles and labels
+    ax.set_title('Cosine Similarity Matrix of Latent Features')
+    plt.xticks(rotation=45, ha='right')
+
+    # Tight layout for better spacing
+    plt.tight_layout()
+
+    # Show plot
+    plt.show()
 
 
 def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10):
@@ -365,11 +422,7 @@ def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10):
     print(report)
 
     # Plot cosine similarity matrix
-    fig, ax = plt.subplots()
-    cax = ax.matshow(cosine_sim, cmap='coolwarm', vmin=-1, vmax=1, alpha=0.8, interpolation='nearest', aspect='auto')
-    fig.colorbar(cax)
-    ax.set_title('Cosine Similarity Matrix of Latent Features')
-    plt.show()
+    plot_correlation_matrix(pd.DataFrame(cosine_sim), threshold=15)
 
     # Plot scatter correlation matrix
     plot_scatter_corr_matrix(model, latents=latent_x, n_components=n_components)
@@ -385,6 +438,7 @@ def variance_test_analysis(model, data, num_samples=1000):
     - num_samples: Number of samples to test (default: 1000)
     """
     num_samples = min(num_samples, data.shape[0])
+    n_components = data.shape[1]
     # Select random samples from the data
     indices = np.random.choice(data.shape[0], num_samples, replace=False)
     x_samples = data[indices]
@@ -425,7 +479,8 @@ def variance_test_analysis(model, data, num_samples=1000):
 
     # Plot variance distribution and exponential fit
     fig, ax = plt.subplots()
-    ax.plot(components, normalized_variances, 'o-', label='Normalized Variances', color='black', alpha=0.7, linewidth=1, markersize=2)
+    ax.plot(components, normalized_variances, 'o-', label='Normalized Variances', color='black', alpha=0.7, linewidth=1,
+            markersize=2)
     ax.plot(components, exp_fit, 'r--', label='Exponential Fit')
     ax.set_title('Variance Distribution and Exponential Fit')
     ax.set_xlabel('Latent Components')
@@ -436,11 +491,20 @@ def variance_test_analysis(model, data, num_samples=1000):
 
     # Plot cumulative variance
     cumulative_variance = np.cumsum(normalized_variances)
+    components_90 = np.argmax(cumulative_variance >= 0.9) + 1
+    components_95 = np.argmax(cumulative_variance >= 0.95) + 1
     fig, ax = plt.subplots()
-    ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance',color='black', alpha=0.7, linewidth=1, markersize=2)
+    ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance', color='black', alpha=0.7, linewidth=1,
+            markersize=2)
     ax.set_title('Cumulative Variance of Latent Components')
     ax.set_xlabel('Latent Components')
     ax.set_ylabel('Cumulative Variance')
+
+    # Add some reference lines
+    ax.axhline(y=0.9, color='r', linestyle='--', lw=1,
+               label=f"90% by {components_90} ({round(100 * components_90 / n_components)}%) components")
+    ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
+               label=f"95% by {components_95} ({round(100 * components_95 / n_components)}%) components")
     ax.legend()
     plt.tight_layout()
     plt.show()
@@ -535,7 +599,7 @@ def evaluate_and_plot(model, x, y):
     ax2.set_aspect("equal")
 
     # # Add colorbar for alpha values
-    cbar = fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
+    fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
 
     # # Add horizontal and vertical lines at 0
     ax2.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
@@ -621,6 +685,7 @@ def linearity_tests_model(model, x: torch.Tensor, y: torch.Tensor):
     print(report)
 
     # Plot results
+    axs: plt.Axes
     fig, axs = plt.subplots(2, 2)
     fig.suptitle(r"Autoencoder Linearity Tests")
 

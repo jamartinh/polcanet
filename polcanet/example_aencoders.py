@@ -77,20 +77,66 @@ class ResNet(torch.nn.Module):
         return self.module(inputs) + inputs
 
 
-class DenseAutoEncoder(nn.Module):
-    """
-    Base autoencoder neural principal latent components decomposition model.
-    """
-
-    def __init__(self, input_dim: int | list | tuple, latent_dim: int, hidden_dim: int | list | tuple, num_layers=3,
-                 act_fn=nn.Mish):
+class DenseEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim, num_layers=3, act_fn=nn.Mish, first_layer_size: int = None,
+                 hidden_size: int = None):
         super().__init__()
-        # check if input_dim is instance of iterable in such a case take the first argument only
+        self.latent_dim = latent_dim
+        layers = []
+
         if isinstance(input_dim, (list, tuple)):
             input_dim = np.prod(input_dim)
 
+        # Ensure first_layer_size and hidden_size are not both specified
+        if first_layer_size is not None and hidden_size is not None:
+            raise ValueError("first_layer_size and hidden_size cannot be defined both. Please specify only one.")
+
+        # Determine the size of the first layer
+        if hidden_size is not None:
+            first_layer_size = hidden_size
+        elif first_layer_size is None:
+            first_layer_size = input_dim
+        else:
+            first_layer_size = first_layer_size
+
+        # Calculate the step size if hidden_size is not specified
+        step_size = (first_layer_size - latent_dim) / (num_layers + 1) if hidden_size is None else 0
+        current_dim = first_layer_size
+
+        # First layer
+        layer = nn.Linear(input_dim, current_dim)
+        torch.nn.init.orthogonal_(layer.weight)
+        layers.append(layer)
+        layers.append(act_fn())
+
+        # Hidden layers
+        for i in range(num_layers):
+            next_dim = hidden_size if hidden_size is not None else int(current_dim - step_size)
+            layer = nn.Linear(current_dim, next_dim)
+            torch.nn.init.orthogonal_(layer.weight)
+            layers.append(layer)
+            layers.append(act_fn())
+            current_dim = next_dim
+
+        # Final layer to latent_dim
+        layer = nn.Linear(current_dim, latent_dim)
+        torch.nn.init.orthogonal_(layer.weight)
+        layers.append(layer)
+
+        self.encoder = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        z = self.encoder(x)
+        return z
+
+
+class DenseDecoder(nn.Module):
+    def __init__(self, latent_dim, output_dim, hidden_dim, num_layers=3, act_fn=nn.Mish):
+        super().__init__()
         self.latent_dim = latent_dim
-        layers_encoder = []
+        self.output_dim = output_dim
+        layers = []
         if not isinstance(hidden_dim, (list, tuple)):
             hidden_dim = [hidden_dim] * num_layers
         elif len(hidden_dim) != num_layers:
@@ -100,61 +146,43 @@ class DenseAutoEncoder(nn.Module):
 
         assert len(hidden_dim) == num_layers, "The length of hidden_dim must be equal to num_layers."
 
-        layer = nn.Linear(input_dim, hidden_dim[0])
-        # torch.nn.init.orthogonal_(layer.weight)
+        if isinstance(output_dim, (list, tuple)):
+            output_dim = np.prod(output_dim)
 
-        layers_encoder.append(layer)
-        layers_encoder.append(act_fn())
+        layer = nn.Linear(latent_dim, hidden_dim[0])
+        # torch.nn.init.orthogonal_(layer.weight)
+        layers.append(layer)
+        layers.append(act_fn())
         for i in range(1, num_layers):
             layer = nn.Linear(hidden_dim[i - 1], hidden_dim[i])
             # torch.nn.init.orthogonal_(layer.weight)
             # if hidden_dim[i - 1] == hidden_dim[i]:
             #     layer = ResNet(layer)
-            layers_encoder.append(layer)
-            # layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            layers_encoder.append(act_fn())
+            layers.append(layer)
+            # layers.append(nn.LayerNorm(hidden_dim[i]))
+            layers.append(act_fn())
 
-        layer = nn.Linear(hidden_dim[-1], latent_dim)
+        layer = nn.Linear(hidden_dim[-1], output_dim)
         # torch.nn.init.orthogonal_(layer.weight)
-        layers_encoder.append(layer)
+        layers.append(layer)
 
-        self.encoder = nn.Sequential(*layers_encoder)
+        self.decoder = nn.Sequential(*layers)
 
-        layers_decoder = []
-        reversed_hidden_dim = hidden_dim[::-1]
-        layer = nn.Linear(latent_dim, reversed_hidden_dim[0])
-        torch.nn.init.orthogonal_(layer.weight)
+    def forward(self, z):
+        reconstruction = self.decoder(z)
+        return reconstruction.view(-1, *self.output_dim)
 
-        layers_decoder.append(layer)
-        layers_decoder.append(act_fn())
-        for i in range(1, num_layers):
-            layer = nn.Linear(reversed_hidden_dim[i - 1], reversed_hidden_dim[i])
-            torch.nn.init.orthogonal_(layer.weight)
-            if reversed_hidden_dim[i - 1] == reversed_hidden_dim[i]:
-                layer = ResNet(layer)
-            layers_decoder.append(layer)
-            layers_encoder.append(nn.LayerNorm(hidden_dim[i]))
-            layers_decoder.append(act_fn())
 
-        layer = nn.Linear(reversed_hidden_dim[-1], input_dim)
-        torch.nn.init.orthogonal_(layer.weight)
-        layers_decoder.append(layer)
-        self.decoder = nn.Sequential(*layers_decoder)
+class DenseAutoEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim, hidden_dim, num_layers=3, act_fn=nn.Mish):
+        super(DenseAutoEncoder, self).__init__()
+        self.encoder = DenseEncoder(input_dim, latent_dim, hidden_dim, num_layers, act_fn)
+        self.decoder = DenseDecoder(latent_dim, input_dim, hidden_dim, num_layers, act_fn)
 
     def forward(self, x):
         z = self.encode(x)
         reconstruction = self.decode(z)
         return z, reconstruction
-
-    def decode(self, z):
-        reconstruction = self.decoder(z)
-        return reconstruction
-
-    def encode(self, x):
-        # flatten all dimensions of x except from the batch dim
-        x = x.view(x.size(0), -1)
-        z = self.encoder(x)
-        return z
 
 
 class LSTMAutoencoder(nn.Module):
@@ -167,12 +195,6 @@ class LSTMAutoencoder(nn.Module):
         latent = self.encoder(x)
         reconstructed = self.decoder(latent)
         return latent, reconstructed
-
-    def encode(self, x):
-        return self.encoder(x)
-
-    def decode(self, z):
-        return self.decoder(z)
 
 
 class LSTMEncoder(nn.Module):
@@ -198,25 +220,20 @@ class LSTMDecoder(nn.Module):
         return x
 
 
-class ConvAutoencoder(nn.Module):
+class oldConvEncoder(nn.Module):
     def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=nn.Mish):
-        super(ConvAutoencoder, self).__init__()
+        super(ConvEncoder, self).__init__()
+
         self.conv_dim = conv_dim
 
         # Select appropriate Conv and ConvTranspose layers
         if conv_dim == 1:
             ConvLayer = nn.Conv1d
-            ConvTransposeLayer = nn.ConvTranspose1d
-            FlattenLayer = nn.Flatten
-            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, input_shape))
             self.input_channels = input_dim
             self.output_channels = input_dim
             self.flattened_size = 2
         elif conv_dim == 2:
             ConvLayer = nn.Conv2d
-            ConvTransposeLayer = nn.ConvTranspose2d
-            FlattenLayer = nn.Flatten
-            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, *input_shape))
             self.input_channels = 1
             self.output_channels = 1
             self.flattened_size = (2, 2)
@@ -228,56 +245,145 @@ class ConvAutoencoder(nn.Module):
                                      ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), act_fn(),
                                      ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), act_fn(),
                                      ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     FlattenLayer(),
+                                     nn.Flatten(),
                                      nn.Linear(latent_dim * scale, latent_dim * scale), act_fn(),
-                                     nn.Linear(latent_dim * scale, latent_dim * scale), act_fn(),
-                                     nn.Linear(latent_dim * scale, latent_dim * scale),
+                                     nn.Linear(latent_dim * scale, latent_dim), act_fn(),
+                                     nn.Linear(latent_dim, latent_dim),
                                      )
 
-        self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
-                                     ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
-                                                        output_padding=1),
-                                     # nn.Mish(),
-                                     ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     # nn.Mish(),
-                                     ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     # nn.Mish(),
-                                     ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1,
-                                                        output_padding=1))
-
     def forward(self, x):
-        latent = self.encode(x)
-        reconstructed = self.decode(latent)
-        return latent, reconstructed
-
-    def encode(self, x):
         if self.conv_dim == 1:
             x = x.permute(0, 2, 1)  # (batch, N, M) -> (batch, M, N)
         else:
             x = x.unsqueeze(1)  # (batch, N, M) -> (batch, 1, N, M)
-        return self.encoder(x)
+        z = self.encoder(x)
 
-    def decode(self, z):
-        decoded = self.decoder(z)
+        return z
+
+
+class ConvEncoder(nn.Module):
+    """
+    Convolutional Encoder for dimensionality reduction and feature extraction.
+
+    Args:
+        input_channels (int): Number of input channels (e.g., 3 for RGB images).
+        latent_dim (int): Dimension of the latent space (output dimension).
+        conv_dim (int): Dimension of the convolution (1 for 1D, 2 for 2D). Default is 2.
+        num_layers (int): Number of convolutional layers. Default is 4.
+        initial_channels (int): Number of channels for the first layer. Default is 16.
+        growth_factor (int): Factor by which the number of channels grows in each subsequent layer. Default is 2.
+        act_fn (nn.Module): Activation function to use. Default is nn.ReLU.
+    """
+
+    def __init__(self, input_channels: int, latent_dim: int, conv_dim: int = 2, num_layers: int = 4,
+                 initial_channels: int = 16, growth_factor: int = 2, act_fn: nn.Module = nn.ReLU):
+        super(ConvEncoder, self).__init__()
+
+        self.conv_dim = conv_dim
+
+        if conv_dim == 1:
+            ConvLayer = nn.Conv1d
+        elif conv_dim == 2:
+            ConvLayer = nn.Conv2d
+        else:
+            raise ValueError("conv_dim must be 1 or 2")
+
+        layers = []
+
+        # Initial input channels
+        current_channels = input_channels
+
+        # Create convolutional layers
+        for i in range(num_layers):
+            next_channels = min(initial_channels * (growth_factor ** i), 512)
+            layers.append(ConvLayer(current_channels, next_channels, kernel_size=3, stride=2, padding=1))
+            layers.append(act_fn())
+            current_channels = next_channels
+
+        # Flatten layer
+        layers.append(nn.Flatten())
+
+        # Calculate the flattened size after convolutional layers
+        dummy_input = torch.zeros(1, input_channels, 32, 32) if conv_dim == 2 else torch.zeros(1, input_channels, 32)
+        flattened_output_size = nn.Sequential(*layers[:-1])(dummy_input).view(1, -1).size(1)
+
+        # Linear layers
+        layers.append(nn.Linear(flattened_output_size, latent_dim * 4))
+        layers.append(act_fn())
+        layers.append(nn.Linear(latent_dim * 4, latent_dim))
+
+        # Define the encoder as a sequential model
+        self.encoder = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the encoder.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, channels, height, width) for 2D or (batch_size, channels, length) for 1D.
+
+        Returns:
+            torch.Tensor: Encoded tensor of shape (batch_size, latent_dim).
+        """
+        if self.conv_dim == 1:
+            x = x.permute(0, 2, 1)  # (batch, N, M) -> (batch, M, N)
+        elif self.conv_dim == 2:
+            if x.ndim == 3:  # if input is (batch, N, M)
+                x = x.unsqueeze(1)  # (batch, N, M) -> (batch, 1, N, M)
+        z = self.encoder(x)
+        return z
+
+
+class ConvDecoder(nn.Module):
+    def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=None):
+        super(ConvDecoder, self).__init__()
+        self.conv_dim = conv_dim
+
+        # Select appropriate Conv and ConvTranspose layers
+        if conv_dim == 1:
+            ConvTransposeLayer = nn.ConvTranspose1d
+            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, input_shape))
+            self.input_channels = input_dim
+            self.output_channels = input_dim
+            self.flattened_size = 2
+        elif conv_dim == 2:
+            ConvTransposeLayer = nn.ConvTranspose2d
+            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, *input_shape))
+            self.input_channels = 1
+            self.output_channels = 1
+            self.flattened_size = (2, 2)
+        else:
+            raise ValueError("conv_dim must be 1 or 2")
+
+        act_fn = act_fn or nn.Identity
+        self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
+                                     ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
+                                                        output_padding=1),
+                                     act_fn(),
+                                     ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+                                     act_fn(),
+                                     ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+                                     act_fn(),
+                                     ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1,
+                                                        output_padding=1))
+
+    def forward(self, x):
+        decoded = self.decoder(x)
         if self.conv_dim == 2:
             decoded = decoded.squeeze(1)  # (batch, 1, N, M) -> (batch, N, M)
         return decoded
 
 
-def autoencoder_factory(autoencoder_type, input_dim, latent_dim, hidden_dim=None, seq_len=None, num_layers=None,
-                        act_fn=None):
-    if autoencoder_type == "dense":
-        return DenseAutoEncoder(input_dim, latent_dim, hidden_dim, num_layers, act_fn=act_fn)
-    elif autoencoder_type == "lstm":
-        if seq_len is None:
-            raise ValueError("seq_len must be provided for LSTMAutoencoder.")
-        return LSTMAutoencoder(input_dim, latent_dim, seq_len, num_layers)
-    elif autoencoder_type == "conv1d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=1, act_fn=act_fn)
-    elif autoencoder_type == "conv2d":
-        return ConvAutoencoder(input_dim, latent_dim, conv_dim=2, act_fn=act_fn)
-    else:
-        raise ValueError(f"Unknown autoencoder_type: {autoencoder_type}")
+class ConvAutoencoder(nn.Module):
+    def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=nn.Mish):
+        super(ConvAutoencoder, self).__init__()
+        self.encoder = ConvEncoder(input_dim, latent_dim, conv_dim, act_fn=act_fn)
+        self.decoder = ConvDecoder(latent_dim, input_dim, conv_dim, act_fn=act_fn)
+
+    def forward(self, x):
+        latent = self.encoder(x)
+        reconstructed = self.decoder(latent)
+        return latent, reconstructed
 
 
 def generate_2d_sinusoidal_data(N, M, num_samples):
@@ -301,3 +407,37 @@ def generate_2d_sinusoidal_data(N, M, num_samples):
         data.append(z)
 
     return np.array(data).astype(np.float32)
+
+
+def bent_function_image(N, M, a=1, b=1, c=1, d=1):
+    x = np.linspace(0, 1, M)
+    y = np.linspace(0, 1, N)
+    X, Y = np.meshgrid(x, y)
+    Z = np.cos(2 * np.pi * (a * X + b * Y)) + np.cos(2 * np.pi * (c * X - d * Y))
+    Z_norm = (Z - Z.min()) / (Z.max() - Z.min())
+    return Z_norm
+
+
+def generate_bent_images(N, M, n_images, param_range=(0.1, 5)):
+    """
+    Generate multiple random bent function images.
+
+    Parameters:
+    n_images (int): Number of images to generate
+    image_size (tuple): Size of each image as (height, width)
+    param_range (tuple): Range for random parameters (min, max)
+
+    Returns:
+    numpy.ndarray: Array of shape (n_images, height, width) containing the bent function images
+    """
+
+    images = np.zeros((n_images, N, M))
+
+    for i in range(n_images):
+        # Generate random parameters
+        a, b, c, d = np.random.uniform(*param_range, size=4)
+
+        # Generate image
+        images[i] = bent_function_image(N, M, a, b, c, d)
+
+    return images

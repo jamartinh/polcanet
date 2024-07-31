@@ -149,7 +149,7 @@ class LinearDecoder(nn.Module):
         input_dim = latent_dim
         for i in range(num_layers - 1):
             if i == 0:
-                layer = nn.Linear(input_dim, hidden_dim)
+                layer = nn.Linear(input_dim, hidden_dim, bias=False)
                 # Apply custom weight initialization to the first layer only
                 # custom_weight_init(layer)
                 layers.append(layer)
@@ -160,12 +160,24 @@ class LinearDecoder(nn.Module):
             if act_fn is not None:
                 layers.append(act_fn())
 
-        layers.append(nn.Linear(hidden_dim, self.prod_input_dim))
+        layers.append(nn.Linear(hidden_dim, self.prod_input_dim, bias=False))
         self.decoder = nn.Sequential(*layers)
 
     def forward(self, z):
         x = self.decoder(z)
         return x.view(-1, *self.input_dim)
 
-    def decode(self, z):
-        return self.forward(z)
+
+class EncoderWrapper(nn.Module):
+    """
+    make the last activation of the encoder be a tanh
+    """
+
+    def __init__(self, encoder):
+        super(EncoderWrapper, self).__init__()
+        self.encoder = nn.Sequential(encoder, nn.Tanh())
+
+    def forward(self, x):
+        z = self.encoder(x)
+        return z
+
