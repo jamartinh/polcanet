@@ -7,6 +7,6 @@ tabulate
 polcanet
 torch
 tqdm
-pydantic
-pythae
+# pydantic
+# pythae
 setuptools

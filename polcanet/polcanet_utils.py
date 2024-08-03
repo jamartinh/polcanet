@@ -139,31 +139,34 @@ class LinearDecoder(nn.Module):
             torch.Size([5, 20])
     """
 
-    def __init__(self, latent_dim, input_dim, hidden_dim=256, num_layers=1, act_fn=None):
+    def __init__(self, latent_dim, input_dim, hidden_dim=256, num_layers=1, act_fn=None, bias=False):
         super().__init__()
         self.latent_dim = latent_dim
         self.input_dim = input_dim
         self.prod_input_dim = int(np.prod(input_dim))
+        bias = True if act_fn is not None or bias else False
 
         layers = []
         input_dim = latent_dim
         for i in range(num_layers - 1):
             if i == 0:
-                layer = nn.Linear(input_dim, hidden_dim, bias=False)
+                layer = nn.Linear(input_dim, hidden_dim, bias=bias)
                 # Apply custom weight initialization to the first layer only
                 # custom_weight_init(layer)
                 layers.append(layer)
 
             else:
-                layers.append(nn.Linear(hidden_dim, hidden_dim))
+                layers.append(nn.Linear(hidden_dim, hidden_dim, bias=bias))
 
             if act_fn is not None:
                 layers.append(act_fn())
 
-        layers.append(nn.Linear(hidden_dim, self.prod_input_dim, bias=False))
+        layers.append(nn.Linear(hidden_dim, self.prod_input_dim, bias=bias))
         self.decoder = nn.Sequential(*layers)
 
     def forward(self, z):
+        if isinstance(z, (tuple, list)):
+            z = z[0] * z[1]
         x = self.decoder(z)
         return x.view(-1, *self.input_dim)
 
@@ -173,11 +176,35 @@ class EncoderWrapper(nn.Module):
     make the last activation of the encoder be a tanh
     """
 
-    def __init__(self, encoder):
-        super(EncoderWrapper, self).__init__()
-        self.encoder = nn.Sequential(encoder, nn.Tanh())
+    def __init__(self, encoder, factor_scale=False):
+        super().__init__()
+        self.factor_scale = factor_scale
+        if not factor_scale:
+            self.encoder = nn.Sequential(encoder, nn.Tanh())
+        else:
+            self.encoder = encoder
 
     def forward(self, x):
         z = self.encoder(x)
-        return z
+        if self.factor_scale:
+            # Calculate the target increase with initial exponential function
+            target_increase = torch.exp(-1.0 * torch.arange(z.shape[1] - 1, -1, -1, dtype=torch.float32,device=z.device))
+            # Normalize the curve to start from 0
+            target_increase = target_increase - target_increase.min()
+            # Optionally, scale the curve to have a maximum of 1
+            target_increase = target_increase / target_increase.max()
 
+            # inject uniform noise to z following pos distribution taking into z now has range of [-1,1]
+            z = z + z.mean(dim=0)*(torch.rand_like(z)-0.5) * target_increase
+            z = torch.nn.functional.tanh(z)
+            return z
+
+            #  extract z_unitary
+            # Gaussian function: exp(-x^2)
+            # gaussian = torch.exp(-z ** 2)
+            #
+            # # Scale to [-1, 1]
+            # scaled_gaussian = 2 * gaussian - 1
+            # return scaled_gaussian
+
+        return z

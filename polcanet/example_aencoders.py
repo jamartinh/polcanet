@@ -220,47 +220,6 @@ class LSTMDecoder(nn.Module):
         return x
 
 
-class oldConvEncoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=nn.Mish):
-        super(ConvEncoder, self).__init__()
-
-        self.conv_dim = conv_dim
-
-        # Select appropriate Conv and ConvTranspose layers
-        if conv_dim == 1:
-            ConvLayer = nn.Conv1d
-            self.input_channels = input_dim
-            self.output_channels = input_dim
-            self.flattened_size = 2
-        elif conv_dim == 2:
-            ConvLayer = nn.Conv2d
-            self.input_channels = 1
-            self.output_channels = 1
-            self.flattened_size = (2, 2)
-        else:
-            raise ValueError("conv_dim must be 1 or 2")
-
-        scale = np.prod(self.flattened_size)
-        self.encoder = nn.Sequential(ConvLayer(self.input_channels, 16, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     ConvLayer(16, 32, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     ConvLayer(32, 64, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     ConvLayer(64, latent_dim, kernel_size=3, stride=2, padding=1), act_fn(),
-                                     nn.Flatten(),
-                                     nn.Linear(latent_dim * scale, latent_dim * scale), act_fn(),
-                                     nn.Linear(latent_dim * scale, latent_dim), act_fn(),
-                                     nn.Linear(latent_dim, latent_dim),
-                                     )
-
-    def forward(self, x):
-        if self.conv_dim == 1:
-            x = x.permute(0, 2, 1)  # (batch, N, M) -> (batch, M, N)
-        else:
-            x = x.unsqueeze(1)  # (batch, N, M) -> (batch, 1, N, M)
-        z = self.encoder(x)
-
-        return z
-
-
 class ConvEncoder(nn.Module):
     """
     Convolutional Encoder for dimensionality reduction and feature extraction.
