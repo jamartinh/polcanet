@@ -87,7 +87,7 @@ class PolcaNetLoss(nn.Module):
         # Compute and normalize variance
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
-        e = torch.mean(z**2, dim=0)
+        e = torch.mean(z ** 2, dim=0)
         e = F.normalize(e, p=1.0, dim=0)
 
         # Center of mass loss
@@ -207,20 +207,30 @@ class PolcaNet(nn.Module):
 
     def decode(self, z, mask=None):
         self.encoder.eval()
-        if z.shape[1] < self.latent_dim:
-            mask = np.concatenate([np.ones(z.shape[1]), np.zeros(self.latent_dim - z.shape[1])])
 
+        # Convert z to tensor if it's not already
+        if not isinstance(z, torch.Tensor):
+            z = torch.tensor(z, dtype=torch.float32, device=self.device)
+
+        # Ensure z has the correct shape
+        if z.shape[1] < self.latent_dim:
+            difference = self.latent_dim - z.shape[1]
+            padding = torch.zeros(z.shape[0], difference, device=self.device)
+            z = torch.cat([z, padding], dim=1)
+
+        # Apply mask if provided
         if mask is not None:
-            if len(mask) != z.shape[1]:
-                mask = np.array(mask)
-                mask = np.concatenate([mask, np.zeros(z.shape[1] - len(mask))])
-            z = np.where(mask == 0, self.mean_metrics.cpu().numpy(), z)
+            if not isinstance(mask, torch.Tensor):
+                mask = torch.tensor(mask, dtype=torch.float32, device=self.device)
+            if len(mask) != self.latent_dim:
+                mask = torch.cat([mask, torch.zeros(self.latent_dim - len(mask), device=self.device)])
+            mask = mask.unsqueeze(0).expand(z.shape[0], -1)
+            z = z * mask  # This effectively sets masked dimensions to zero
 
         with torch.no_grad():
-            z = torch.tensor(z, dtype=torch.float32, device=self.device)
             r = self.decoder(z)
-            r = r.detach().cpu().numpy()
-        return r
+
+        return r.cpu().numpy()
 
     def update_metrics(self, z, r, x):
         # make a random update with probability 0.25

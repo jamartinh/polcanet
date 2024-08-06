@@ -77,7 +77,7 @@ def save_text(text, name):
             f.write(text)
 
 
-def plot_reconstruction_mask(model, data, save_fig: str = None):
+def plot_reconstruction_mask(model, data,n_components=None, save_fig: str = None):
     latents, reconstructed = model.predict(data)
     inputs = data
     arr_x = np.zeros((latents.shape[1], latents.shape[1]))
@@ -524,6 +524,11 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
                label=f"95% by {components_95} ({round(100 * components_95 / n_components)}%) components")
     ax.legend()
+    # set x-axis from 1 to n_components
+    # ax.set_xlim(1, n_components)
+    # set y-axis from 0 to 1
+    ax.set_ylim(0, 1)
+    ax.set_box_aspect(2 / 3)
     fig_name = "cumulative_variance.pdf"
     save_figure(fig_name)
     plt.show()

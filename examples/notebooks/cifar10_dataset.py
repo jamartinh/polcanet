@@ -195,7 +195,7 @@ model = PolcaNet(
     encoder=encoder,
     decoder=decoder,
     latent_dim=latent_dim,
-    alpha=0.0,  # ortgogonality loss
+    alpha=0.1,  # ortgogonality loss
     beta=1.0,  # variance sorting loss
     gamma=0,  # variance reduction loss
     device=device,
@@ -238,10 +238,10 @@ latents, reconstructed = model.predict(X)
 # Assuming images are properly defined as before
 images = X[0:25]
 report.set_fig_prefix("train")
-ut.plot_reconstruction_comparison(model,pca,images,nrow=5)
+ut.plot_reconstruction_comparison(model,pca,images,n_components=70,nrow=5)
 images = X_test[0:25]
 report.set_fig_prefix("test")
-ut.plot_reconstruction_comparison(model,pca,images,nrow=5)
+ut.plot_reconstruction_comparison(model,pca,images,n_components=70,nrow=5)
 # -
 
 report.set_fig_prefix("train")

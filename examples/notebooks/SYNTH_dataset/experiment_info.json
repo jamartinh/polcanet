@@ -2,7 +2,7 @@
     "Experiment Name": "SYNTH_dataset",
     "Experiment Description": "POLCA-Net on Synthetic Sinudosial and Bent Images",
     "Random Seed": 5,
-    "Date and Time": "2024-08-04 12:02:52",
+    "Date and Time": "2024-08-05 18:42:19",
     "Experiment Folder": "/data/deploy/polcanet/examples/notebooks/SYNTH_dataset",
     "Python Version": "3.12.4 | packaged by conda-forge | (main, Jun 17 2024, 10:23:07) [GCC 12.3.0]",
     "PyTorch Version": "2.4.0",

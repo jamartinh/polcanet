@@ -15,6 +15,7 @@ from scipy.stats import wilcoxon
 from skimage import exposure
 from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
 from sklearn import decomposition
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -136,12 +137,17 @@ def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", 
     plt.show()
 
 
-def plot_reconstruction_comparison(model, pca, images, cmap="viridis", nrow=5):
-    _, ae_reconstructed = model.predict(images)
+def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="viridis", nrow=5):
+    if n_components > pca.n_components:
+        raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
 
+    n_components = n_components or pca.n_components
+    latents = model.encode(images)
+    ae_reconstructed = model.decode(latents[:, :n_components])
+    r_pca = ReducedPCA(pca, n_components)
     # Reconstruct and visualize the images by PCA
-    pca_latents = pca.transform(images.reshape(images.shape[0], -1))
-    pca_reconstructed = pca.inverse_transform(pca_latents)
+    pca_latents = r_pca.transform(images.reshape(images.shape[0], -1))
+    pca_reconstructed = r_pca.inverse_transform(pca_latents)
     pca_reconstructed = pca_reconstructed.reshape(images.shape)
 
     visualise_reconstructed_images(
@@ -240,7 +246,9 @@ def get_pca(x, n_components=None, ax=None, title="", save_fig=None):
 
     # Compute cumulative explained variance ratio
     cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
-    plot_components_cdf(cumulative_variance_ratio, n_components, title, ax, save_fig)
+    plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
+    fig_name = save_fig or "pca_explained_variance.pdf"
+    save_figure(fig_name)
 
     return pca
 
@@ -281,6 +289,10 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
                label=f"95% by {(100 * components_95 / total_components):.1f}% ({components_95}) components")
     ax.legend()
+    # set x-axis from 1 to n_components
+    # ax.set_xlim(1, n_components)
+    # set y-axis from 0 to 1
+    ax.set_ylim(0, 1)
     ax.set_box_aspect(2 / 3)
 
 
@@ -700,3 +712,40 @@ class TorchPCA(nn.Module):
         if self.center and self.mean is not None:
             X_original = X_original + torch.tensor(self.mean, dtype=torch.float32).to(self.device)
         return X_original.cpu().numpy()
+
+
+class ReducedPCA:
+    def __init__(self, pca, n_components):
+        """
+        Initialize ReducedPCA with a fitted PCA object and desired number of components.
+
+        :param pca: Fitted PCA object
+        :param n_components: Number of components to use (must be <= pca.n_components_)
+        """
+        if n_components > pca.n_components_:
+            raise ValueError("n_components must be <= pca.n_components_")
+
+        self.n_components = n_components
+        self.components_ = pca.components_[:n_components]
+        self.mean_ = pca.mean_
+        self.explained_variance_ = pca.explained_variance_[:n_components]
+        self.explained_variance_ratio_ = pca.explained_variance_ratio_[:n_components]
+
+    def transform(self, X):
+        """
+        Apply dimensionality reduction to X using the reduced number of components.
+
+        :param X: Array-like of shape (n_samples, n_features)
+        :return: Array-like of shape (n_samples, n_components)
+        """
+        X_centered = X - self.mean_
+        return np.dot(X_centered, self.components_.T)
+
+    def inverse_transform(self, X_transformed):
+        """
+        Transform data back to its original space using the reduced number of components.
+
+        :param X_transformed: Array-like of shape (n_samples, n_components)
+        :return: Array-like of shape (n_samples, n_features)
+        """
+        return np.dot(X_transformed, self.components_) + self.mean_
