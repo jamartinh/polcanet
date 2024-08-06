@@ -1,0 +1,27 @@
+PolcaNet(
+  (encoder): EncoderWrapper(
+    (encoder): DenseEncoder(
+      (encoder): Sequential(
+        (0): Linear(in_features=64, out_features=256, bias=True)
+        (1): SiLU()
+        (2): Linear(in_features=256, out_features=194, bias=True)
+        (3): SiLU()
+        (4): Linear(in_features=194, out_features=132, bias=True)
+        (5): SiLU()
+        (6): Linear(in_features=132, out_features=70, bias=True)
+        (7): SiLU()
+        (8): Linear(in_features=70, out_features=8, bias=True)
+      )
+    )
+  )
+  (decoder): LinearDecoder(
+    (decoder): Sequential(
+      (0): Linear(in_features=8, out_features=256, bias=True)
+      (1): SiLU()
+      (2): Linear(in_features=256, out_features=256, bias=True)
+      (3): SiLU()
+      (4): Linear(in_features=256, out_features=64, bias=True)
+    )
+  )
+  (polcanet_loss): PolcaNetLoss()
+)

@@ -1,15 +1,18 @@
 import json
 import os
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from IPython.display import display
-from matplotlib import pyplot as plt
 from scipy.stats import wilcoxon
+from skimage import exposure
 from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
 from sklearn import decomposition
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
@@ -22,7 +25,29 @@ from sklearn.svm import SVC
 from polcanet.polcanet_reports import save_figure, save_latex_table
 
 
-def make_grid(images, nrow=8, padding=2, pad_value=0):
+def normalize_array(array, value_range=None, scale_each=False):
+    def norm_ip(arr, low, high):
+        arr = np.clip(arr, low, high)  # Equivalent to clamp_
+        arr = (arr - low) / max(high - low, 1e-5)  # Equivalent to sub_ and div_
+        return arr
+
+    def norm_range(arr, value_range):
+        if value_range is not None:
+            return norm_ip(arr, value_range[0], value_range[1])
+        else:
+            return norm_ip(arr, np.min(arr), np.max(arr))
+
+    if scale_each:
+        # Normalize each slice along the first dimension independently
+        normalized_array = np.array([norm_range(t, value_range) for t in array])
+    else:
+        # Normalize the entire array as a whole
+        normalized_array = norm_range(array, value_range)
+
+    return normalized_array
+
+
+def make_grid(images, nrow=8, padding=2, pad_value=0, normalize=True):
     """
     Arrange a batch of images into a grid.
 
@@ -33,7 +58,7 @@ def make_grid(images, nrow=8, padding=2, pad_value=0):
         C is the number of channels (1 for grayscale, 3 for RGB).
     - nrow (int): Number of images per row in the grid.
     - padding (int): Number of pixels to pad around each image in the grid.
-    - pad_value (int or float): Value to use for the padding pixels.
+    - pad_value (int or float or tuple): Value to use for the padding pixels. Should be a single value for grayscale, or a tuple of 3 values for RGB.
 
     Returns:
     - grid (numpy.ndarray): A single image (2D or 3D array) representing the grid of images.
@@ -42,15 +67,24 @@ def make_grid(images, nrow=8, padding=2, pad_value=0):
         raise ValueError("Images should be a 3D array with shape (N, H, W) or a 4D array with shape (N, H, W, C)")
 
     if images.ndim == 3:
-        images = np.expand_dims(images, axis=-1)  # Convert (N, H, W) to (N, H, W, 1)
+        images = np.expand_dims(images, axis=1)  # Convert (N, H, W) to (N, C=1, H, W)
 
-    N, H, W, C = images.shape
+    N, C, H, W = images.shape
+    images = np.transpose(images, (0, 2, 3, 1))  # Convert from (N, C, H, W) to (N, H, W, C)
+
+    if normalize:
+        images = normalize_array(images, value_range=(0, 1), scale_each=False)
+
     ncol = int(np.ceil(N / nrow))
 
     grid_height = H * ncol + padding * (ncol + 1)
     grid_width = W * nrow + padding * (nrow + 1)
 
-    grid = np.full((grid_height, grid_width, C), pad_value, dtype=images.dtype)
+    # Handle padding value for different image channels
+    if isinstance(pad_value, tuple) and len(pad_value) == 3 and C == 3:
+        grid = np.full((grid_height, grid_width, C), pad_value, dtype=images.dtype)
+    else:
+        grid = np.full((grid_height, grid_width, C), pad_value, dtype=images.dtype)
 
     for idx, image in enumerate(images):
         row = idx // nrow
@@ -69,15 +103,24 @@ def make_grid(images, nrow=8, padding=2, pad_value=0):
 # Function to show a single image
 def show_image(ax, img, cmap=None):
     cmap = cmap or "viridis"
+    # if the images has channels last we should convert it to channels first
+    # check if image is not int the range should be float32 [0,1] so we have to scale it
+
+    if img.ndim == 3 and img.shape[0] in {1, 3}:
+        img = np.transpose(img, (1, 2, 0))  # Convert (C, H, W) to (H, W, C)
+
+    if img.dtype != np.uint8:
+        img = exposure.rescale_intensity(img, in_range='image', out_range=(0, 1))
+
     ax.imshow(img, cmap=cmap)
     ax.axis("off")  # Turn off axis
 
 
 # Function to visualize output images horizontally
-def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", nrow=5, padding=0, save_fig: str = None):
+def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", nrow=5, padding=0,
+                                   save_fig: str = None):
     # Create a figure for all visualizations to be displayed horizontally
-    fig, axs = plt.subplots(1, len(reconstructed_list),
-                            figsize=(15, 15))  # Adjust number of subplots and size as needed22
+    fig, axs = plt.subplots(1, len(reconstructed_list), )
     fig.subplots_adjust(wspace=0.01)
     for ax, reconstructed, title in zip(axs, reconstructed_list, title_list):
         reconstructed = np.squeeze(reconstructed)
@@ -86,11 +129,31 @@ def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", 
         grid = make_grid(reconstructed, nrow=nrow, padding=padding, pad_value=0)
         show_image(ax, grid, cmap=cmap)
         ax.set_title(title)
-    fig_name = "reconstructed_images.pdf"
+
+    plt.tight_layout()
+    fig_name = save_fig or "reconstructed_images.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
     plt.show()
+
+
+def plot_reconstruction_comparison(model, pca, images, cmap="viridis", nrow=5):
+    _, ae_reconstructed = model.predict(images)
+
+    # Reconstruct and visualize the images by PCA
+    pca_latents = pca.transform(images.reshape(images.shape[0], -1))
+    pca_reconstructed = pca.inverse_transform(pca_latents)
+    pca_reconstructed = pca_reconstructed.reshape(images.shape)
+
+    visualise_reconstructed_images(
+        [images, ae_reconstructed, pca_reconstructed],
+        title_list=[
+                "Original",
+                "POLCA-Net",
+                "PCA",
+        ],
+        nrow=nrow,
+        cmap=cmap,
+    )
 
 
 def calculate_metrics(original_images, reconstructed_images):
@@ -99,7 +162,7 @@ def calculate_metrics(original_images, reconstructed_images):
 
     Parameters:
     - original_images (numpy.ndarray): Array of original images with shape (N, H, W).
-    - reconstructed_images (numpy.ndarray): Array of reconstructed images with shape (N, H, W).
+    - reconstructed_images (numpy.ndarray): Array of reconstructed images with shape (N,C, H, W).
 
     Returns:
     - avg_metrics (dict): Dictionary containing the average metrics:
@@ -116,7 +179,9 @@ def calculate_metrics(original_images, reconstructed_images):
     for orig, recon in zip(original_images, reconstructed_images):
         nmse = mean_squared_error(orig, recon) / np.mean(np.square(orig))
         psnr = peak_signal_noise_ratio(orig, recon, data_range=255)
-        ssim = structural_similarity(orig, recon, data_range=255)
+        # check if the image has a channel dimension and pass the param to the structural similarity function
+        channel_axis = None if recon.ndim == 2 else 0
+        ssim = structural_similarity(orig, recon, data_range=255, channel_axis=channel_axis)
 
         metrics['Normalized Mean Squared Error'].append(nmse)
         metrics['Peak Signal-to-Noise Ratio'].append(psnr)
@@ -180,14 +245,30 @@ def get_pca(x, n_components=None, ax=None, title="", save_fig=None):
     return pca
 
 
-def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=None, save_fig=None):
+def get_pca_torch(x: np.ndarray, n_components=None, ax=None, title="", save_fig=None, device="cuda"):
+    total_pca = TorchPCA(device=device)
+    total_pca.fit(x)
+    n_components = n_components or x.shape[1]
+    pca = TorchPCA(n_components=n_components, device=device)
+    pca.fit(x)
+
+    # Compute cumulative explained variance ratio
+    cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
+    plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
+    fig_name = save_fig or "pca_explained_variance.pdf"
+    save_figure(fig_name)
+
+    return pca
+
+
+def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=None):
     # Number of components needed for 90% and 95% explained variance
     total_components = len(cumulative_variance_ratio)
     components_90 = np.argmax(cumulative_variance_ratio >= 0.9) + 1
     components_95 = np.argmax(cumulative_variance_ratio >= 0.95) + 1
     # If ax is not provided, create a new figure and axis
     if ax is None:
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
     ax.plot(range(1, n_components + 1), cumulative_variance_ratio[:n_components], color="black",
             label="explained variance", lw=1)
     ax.set_xlabel(f'Number of components: {n_components} of {total_components}')
@@ -201,10 +282,6 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
                label=f"95% by {(100 * components_95 / total_components):.1f}% ({components_95}) components")
     ax.legend()
     ax.set_box_aspect(2 / 3)
-    fig_name = "pca_explained_variance.pdf"
-    save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
 
 
 def image_metrics_table(experiment_data: dict):
@@ -212,11 +289,12 @@ def image_metrics_table(experiment_data: dict):
     for k, (images, model, pca) in experiment_data.items():
         # Reconstruct the images using the autoencoder
         _, ae_reconstructed = model.predict(images)
+        ae_reconstructed = ae_reconstructed.reshape(images.shape)
 
         # Reconstruct the images by PCA
         pca_latents = pca.transform(images.reshape(images.shape[0], -1))
         pca_reconstructed = pca.inverse_transform(pca_latents)
-        pca_reconstructed = pca_reconstructed.reshape(images.shape[0], images.shape[1], images.shape[2])
+        pca_reconstructed = pca_reconstructed.reshape(images.shape)
         original_images = np.squeeze(images)
         reconstructed_sets = {
                 f"POLCA {k}": ae_reconstructed,
@@ -227,6 +305,7 @@ def image_metrics_table(experiment_data: dict):
         tables.append(item)
 
     df_table = pd.concat(tables).set_index("Method")
+    display(df_table)
     save_latex_table(df_table, "image_metrics.tex")
     return df_table
 
@@ -358,21 +437,26 @@ def make_classification_report(model, pca, X, y):
     return df_metrics, df_wilcoxon
 
 
-def plot_train_images(x, title, n=1, cmap="gray", save_fig=None):
+def plot_train_images(x, title="", n=1, cmap="gray", save_fig=None):
     # Plot original and reconstructed signals for a sample
     fig, axes = plt.subplots(1, n)
-    fig.subplots_adjust(wspace=0.01)
+    fig.subplots_adjust(wspace=0.0)
     im_list = list(range(n))
     for i in im_list:
-        axes[i].imshow(x[i], cmap=cmap)
+        # if the images has channels last we should convert it to channels first
+        if x[i].ndim == 3 and x[i].shape[0] in {1, 3}:
+            _x = np.transpose(x[i], (1, 2, 0))
+        else:
+            _x = x[i]
+        # _x = normalize_array(_x, value_range=(0, 1), scale_each=False)
+        axes[i].imshow(_x, cmap=cmap)
         if i == n // 2:
-            axes[i].set_title(f"{title}")
+            if title:
+                axes[i].set_title(f"{title}")
         axes[i].axis("off")
 
-    fig_name = "train_images.pdf"
+    fig_name = save_fig or "train_images.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
     plt.show()
 
 
@@ -388,6 +472,76 @@ def plot2d_analysis(X, y, title, legend=False):
     plt.title(title)
     plt.show()
     return fig, ax
+
+
+def generate_model_summary_markdown(model_structure):
+    def format_number(num):
+        if num >= 1_000_000:
+            return f"{num / 1_000_000:.2f}M"
+        elif num >= 1_000:
+            return f"{num / 1_000:.2f}K"
+        else:
+            return str(num)
+
+    # Calculate totals from model structure
+    total_params = sum(layer.get('params', 0) for layer in model_structure)
+    total_mult_adds = sum(layer.get('mult_adds', 0) for layer in model_structure)
+
+    # Assuming all params are trainable for this example
+    trainable_params = total_params
+    non_trainable_params = 0
+
+    # Estimate memory usage (these are rough estimates and may need adjustment)
+    params_size = total_params * 4 / (1024 * 1024)  # Assuming 4 bytes per parameter
+    input_size = sum(eval(layer['output_shape'])[1] * eval(layer['output_shape'])[2]
+                     for layer in model_structure if 'output_shape' in layer) * 4 / (1024 * 1024)
+    forward_backward_size = input_size * 2  # Rough estimate
+    total_size = params_size + input_size + forward_backward_size
+
+    # Define column widths
+    col_widths = [50, 20, 20, 20, 20]
+
+    # Create header
+    header = "| " + " | ".join(word.ljust(width) for word, width in zip(
+        ["Layer (type (var_name))", "Kernel Shape", "Output Shape", "Param #", "Mult-Adds"],
+        col_widths)) + " |"
+    separator = "|" + "|".join("-" * (width + 2) for width in col_widths) + "|"
+
+    rows = [header, separator]
+
+    # Add model structure
+    for layer in model_structure:
+        name = textwrap.shorten(layer['name'], width=col_widths[0], placeholder="...")
+        kernel = layer.get('kernel_shape', '--')
+        output = layer.get('output_shape', '--')
+        params = format_number(layer.get('params', 0))
+        mult_adds = format_number(layer.get('mult_adds', 0))
+
+        row = f"| {name.ljust(col_widths[0])} | {str(kernel).ljust(col_widths[1])} | {str(output).ljust(col_widths[2])} | {params.ljust(col_widths[3])} | {mult_adds.ljust(col_widths[4])} |"
+        rows.append(row)
+
+        for param_name, param_shape in layer.get('parameters', {}).items():
+            param_row = f"| └─{param_name.ljust(col_widths[0] - 2)} | {str(param_shape).ljust(col_widths[1])} | {''.ljust(col_widths[2])} | {''.ljust(col_widths[3])} | {''.ljust(col_widths[4])} |"
+            rows.append(param_row)
+
+    # Add summary information
+    summary = f"""
+| Summary | |
+|---------|--------|
+| Total params | {format_number(total_params)} |
+| Trainable params | {format_number(trainable_params)} |
+| Non-trainable params | {format_number(non_trainable_params)} |
+| Total mult-adds | {format_number(total_mult_adds)} |
+
+| Memory Usage | |
+|--------------|--------|
+| Input size (MB) | {input_size:.2f} |
+| Forward/backward pass size (MB) | {forward_backward_size:.2f} |
+| Params size (MB) | {params_size:.2f} |
+| Estimated Total Size (MB) | {total_size:.2f} |
+"""
+
+    return "\n".join(rows) + summary
 
 
 class ExperimentInfoHandler:
@@ -408,6 +562,7 @@ class ExperimentInfoHandler:
         self.experiment_folder = Path.cwd() / f"{self.experiment_name}"
         self.create_experiment_folder()
         self.add_experiment_info_to_folder()
+        self.extra_args = dict()
 
     def create_experiment_folder(self):
         self.experiment_folder.mkdir(exist_ok=True)
@@ -441,3 +596,107 @@ class ExperimentInfoHandler:
         }
         with open(self.experiment_folder / "experiment_info.json", "w") as f:
             json.dump(info, f, indent=4)
+
+    def add_extra_args(self, **kwargs):
+        # add extra args to the experiment json
+        self.extra_args.update(kwargs)
+        with open(self.experiment_folder / "experiment_info.json", "r") as f:
+            info = json.load(f)
+        info.update(self.extra_args)
+        with open(self.experiment_folder / "experiment_info.json", "w") as f:
+            json.dump(info, f, indent=4)
+
+
+class TorchPCA(nn.Module):
+    def __init__(self, n_components=None, center=True, device=None):
+        """
+        PCA implementation using PyTorch, with NumPy interface.
+
+        Parameters:
+        - n_components (int or None): Number of components to keep.
+                                      If None, all components are kept.
+        - center (bool): Whether to center the data before applying PCA.
+        - device (str or torch.device or None): The device to run computations on. If None, defaults to 'cpu'.
+        """
+        super(TorchPCA, self).__init__()
+        self.n_components = n_components
+        self.center = center
+        self.device = device if device is not None else torch.device('cpu')
+        self.mean = None
+        self.components_ = None
+        self.explained_variance_ = None
+        self.explained_variance_ratio_ = None
+
+    def fit(self, X):
+        """
+        Fit the PCA model to X.
+
+        Parameters:
+        - X (np.ndarray): The data to fit, of shape (n_samples, n_features).
+        """
+        X = torch.tensor(X, dtype=torch.float32).to(self.device)
+
+        if self.center:
+            self.mean = X.mean(dim=0)
+            X = X - self.mean
+
+        # Perform PCA using torch.pca_lowrank
+        U, S, V = torch.pca_lowrank(X, q=self.n_components)
+
+        self.components_ = V  # Principal components
+        explained_variance = (S ** 2) / (X.shape[0] - 1)
+        self.explained_variance_ = explained_variance
+        total_variance = explained_variance.sum()
+        self.explained_variance_ratio_ = explained_variance / total_variance
+
+        # Convert back to numpy arrays for the external interface
+        self.mean = self.mean.cpu().numpy() if self.mean is not None else None
+        self.components_ = self.components_.cpu().numpy()
+        self.explained_variance_ = self.explained_variance_.cpu().numpy()
+        self.explained_variance_ratio_ = self.explained_variance_ratio_.cpu().numpy()
+
+    def transform(self, X):
+        """
+        Apply the dimensionality reduction on X.
+
+        Parameters:
+        - X (np.ndarray): New data to project, of shape (n_samples, n_features).
+
+        Returns:
+        - X_transformed (np.ndarray): The data in the principal component space.
+        """
+        X = torch.tensor(X, dtype=torch.float32).to(self.device)
+        if self.center and self.mean is not None:
+            X = X - torch.tensor(self.mean, dtype=torch.float32).to(self.device)
+        X_transformed = torch.matmul(X, torch.tensor(self.components_, dtype=torch.float32).to(self.device))
+        return X_transformed.cpu().numpy()
+
+    def fit_transform(self, X):
+        """
+        Fit the model with X and apply the dimensionality reduction on X.
+
+        Parameters:
+        - X (np.ndarray): The data to fit and transform, of shape (n_samples, n_features).
+
+        Returns:
+        - X_transformed (np.ndarray): The data in the principal component space.
+        """
+        self.fit(X)
+        return self.transform(X)
+
+    def inverse_transform(self, X_transformed):
+        """
+        Transform data back to its original space.
+
+        Parameters:
+        - X_transformed (np.ndarray): Data in the principal component space, of shape (n_samples, n_components).
+
+        Returns:
+        - X_original (np.ndarray): The data transformed back to the original space.
+        """
+        X_transformed = torch.tensor(X_transformed, dtype=torch.float32).to(self.device)
+        X_original = torch.matmul(X_transformed,
+                                  torch.tensor(self.components_, dtype=torch.float32).t().to(self.device))
+        if self.center and self.mean is not None:
+            X_original = X_original + torch.tensor(self.mean, dtype=torch.float32).to(self.device)
+        return X_original.cpu().numpy()

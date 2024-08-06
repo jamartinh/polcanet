@@ -10,3 +10,11 @@ tqdm
 # pydantic
 # pythae
 setuptools
+
+ipython
+scikit-image
+ipywidgets
+SciencePlots
+seaborn
+torchvision
+cmasher

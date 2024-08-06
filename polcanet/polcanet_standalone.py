@@ -61,8 +61,6 @@ class PolcaNetLoss(nn.Module):
         L: total combined loss
         """
 
-        if isinstance(z, (tuple, list)):
-            z = z[0] * z[1]
         # Reconstruction loss
         # Purpose: Ensure the model can accurately reconstruct the input data
         # Method: Mean Squared Error between input and reconstruction
@@ -151,7 +149,7 @@ class PolcaNet(nn.Module):
         compute_losses(z, r, x): Computes the losses.
     """
 
-    def __init__(self, encoder, decoder, latent_dim, alpha=0.1, beta=0.1, gamma=0.01,
+    def __init__(self, encoder, decoder, latent_dim, alpha=1.0, beta=1.0, gamma=0,
                  device="cpu", center=True, factor_scale=False):
         """
         Initialize PolcaNet with the provided parameters.

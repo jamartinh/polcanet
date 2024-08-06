@@ -294,43 +294,81 @@ class ConvEncoder(nn.Module):
 
 
 class ConvDecoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, conv_dim=2, act_fn=None):
+    """
+    Convolutional Decoder for reconstructing data from a latent space.
+
+    Args:
+        latent_dim (int): Dimension of the latent space (input dimension).
+        output_channels (int): Number of output channels (e.g., 3 for RGB images).
+        conv_dim (int): Dimension of the convolution (1 for 1D, 2 for 2D). Default is 2.
+        num_layers (int): Number of transposed convolutional layers. Default is 4.
+        initial_channels (int): Number of channels for the last layer before output. Default is 16.
+        growth_factor (int): Factor by which the number of channels reduces in each subsequent layer. Default is 2.
+        act_fn (nn.Module): Activation function to use. Default is nn.ReLU.
+        output_act_fn (nn.Module): Activation function to apply to the output. Default is nn.Sigmoid for normalization purposes.
+        final_output_size (int or tuple): Target output size for reconstruction (e.g., 32 or (32, 32)). Used to determine intermediate dimensions.
+    """
+
+    def __init__(self, latent_dim: int, output_channels: int, conv_dim: int = 2, num_layers: int = 4,
+                 initial_channels: int = 16, growth_factor: int = 2, act_fn: nn.Module = nn.ReLU,
+                 output_act_fn: nn.Module = nn.Sigmoid, final_output_size=(32, 32)):
         super(ConvDecoder, self).__init__()
+
         self.conv_dim = conv_dim
 
-        # Select appropriate Conv and ConvTranspose layers
         if conv_dim == 1:
             ConvTransposeLayer = nn.ConvTranspose1d
-            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, input_shape))
-            self.input_channels = input_dim
-            self.output_channels = input_dim
-            self.flattened_size = 2
         elif conv_dim == 2:
             ConvTransposeLayer = nn.ConvTranspose2d
-            UnflattenLayer = lambda input_shape: nn.Unflatten(1, (latent_dim, *input_shape))
-            self.input_channels = 1
-            self.output_channels = 1
-            self.flattened_size = (2, 2)
         else:
             raise ValueError("conv_dim must be 1 or 2")
 
-        act_fn = act_fn or nn.Identity
-        self.decoder = nn.Sequential(UnflattenLayer(self.flattened_size),
-                                     ConvTransposeLayer(latent_dim, 64, kernel_size=3, stride=2, padding=1,
-                                                        output_padding=1),
-                                     act_fn(),
-                                     ConvTransposeLayer(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     act_fn(),
-                                     ConvTransposeLayer(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
-                                     act_fn(),
-                                     ConvTransposeLayer(16, self.output_channels, kernel_size=3, stride=2, padding=1,
-                                                        output_padding=1))
+        layers = []
 
-    def forward(self, x):
-        decoded = self.decoder(x)
-        if self.conv_dim == 2:
-            decoded = decoded.squeeze(1)  # (batch, 1, N, M) -> (batch, N, M)
-        return decoded
+        # Calculate the flattened size after the encoder
+        if isinstance(final_output_size, int):
+            final_output_size = (final_output_size,)
+
+        intermediate_size = [dim // (2 ** num_layers) for dim in final_output_size]
+        intermediate_channels = min(initial_channels * (growth_factor ** (num_layers - 1)), 512)
+        flattened_intermediate_size = intermediate_channels * int(torch.prod(torch.tensor(intermediate_size)).item())
+
+        # Linear layers to go from latent space to intermediate representation
+        layers.append(nn.Linear(latent_dim, latent_dim * 4))
+        layers.append(act_fn())
+        layers.append(nn.Linear(latent_dim * 4, flattened_intermediate_size))
+        layers.append(act_fn())
+        layers.append(nn.Unflatten(1, (intermediate_channels, *intermediate_size)))
+
+        # Create transposed convolutional layers
+        current_channels = intermediate_channels
+        for i in range(num_layers):
+            next_channels = max(growth_factor*initial_channels // (growth_factor ** i), output_channels)
+            layers.append(ConvTransposeLayer(current_channels, next_channels, kernel_size=3, stride=2, padding=1, output_padding=1))
+            layers.append(act_fn())
+            current_channels = next_channels
+
+        # Output layer
+        layers.append(ConvTransposeLayer(current_channels, output_channels, kernel_size=3, stride=1, padding=1))
+        layers.append(output_act_fn())
+
+        # Define the decoder as a sequential model
+        self.decoder = nn.Sequential(*layers)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the decoder.
+
+        Args:
+            z (torch.Tensor): Latent tensor of shape (batch_size, latent_dim).
+
+        Returns:
+            torch.Tensor: Reconstructed tensor of shape (batch_size, channels, height, width) for 2D or (batch_size, channels, length) for 1D.
+        """
+        x_reconstructed = self.decoder(z)
+        if self.conv_dim == 1:
+            x_reconstructed = x_reconstructed.permute(0, 2, 1)  # (batch, M, N) -> (batch, N, M)
+        return x_reconstructed
 
 
 class ConvAutoencoder(nn.Module):
@@ -343,6 +381,54 @@ class ConvAutoencoder(nn.Module):
         latent = self.encoder(x)
         reconstructed = self.decoder(latent)
         return latent, reconstructed
+
+
+class VGG(nn.Module):
+    def __init__(self, vgg_name, latent_dim, act_fn=nn.ReLU):
+        super(VGG, self).__init__()
+        self.cfg = {
+                'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+                'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+                'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+                'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512,
+                          512, 'M'],
+        }
+        self.features = self._make_layers(self.cfg[vgg_name])
+        self.dense_layers = nn.Sequential(
+            nn.Linear(512, 512),
+            act_fn(),
+            nn.Linear(512, latent_dim),
+            act_fn(),
+            nn.Linear(latent_dim, latent_dim),
+        )
+
+    def forward(self, x):
+        out = self.features(x)
+        out = out.view(out.size(0), -1)
+        out = self.dense_layers(out)
+        return out
+
+    @staticmethod
+    def _make_layers(cfg):
+        layers = []
+        in_channels = 3
+        for x in cfg:
+            if x == 'M':
+                layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            else:
+                layers += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
+                           nn.BatchNorm2d(x),
+                           nn.ReLU(inplace=True)]
+                in_channels = x
+        layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
+        return nn.Sequential(*layers)
+
+
+def test_vgg():
+    net = VGG('VGG11', 10, nn.ReLU)
+    x = torch.randn(2, 3, 32, 32)
+    y = net(x)
+    print(y.size())
 
 
 def generate_2d_sinusoidal_data(N, M, num_samples):
@@ -377,7 +463,7 @@ def bent_function_image(N, M, a=1, b=1, c=1, d=1):
     return Z_norm
 
 
-def generate_bent_images(N, M, n_images, param_range=(0.1, 5)):
+def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
     """
     Generate multiple random bent function images.
 
@@ -390,9 +476,9 @@ def generate_bent_images(N, M, n_images, param_range=(0.1, 5)):
     numpy.ndarray: Array of shape (n_images, height, width) containing the bent function images
     """
 
-    images = np.zeros((n_images, N, M))
+    images = np.zeros((num_samples, N, M))
 
-    for i in range(n_images):
+    for i in range(num_samples):
         # Generate random parameters
         a, b, c, d = np.random.uniform(*param_range, size=4)
 

@@ -1,0 +1,21 @@
+{
+    "Experiment Name": "MNIST_dataset",
+    "Experiment Description": "POLCA-Net on MNIST dataset",
+    "Random Seed": 5,
+    "Date and Time": "2024-08-04 04:08:57",
+    "Experiment Folder": "/data/deploy/polcanet/examples/notebooks/MNIST_dataset",
+    "Python Version": "3.12.4 | packaged by conda-forge | (main, Jun 17 2024, 10:23:07) [GCC 12.3.0]",
+    "PyTorch Version": "2.4.0",
+    "CUDA Version": "12.4",
+    "CUDNN Version": 90100,
+    "Device": "NVIDIA A100 80GB PCIe",
+    "GPU Type": [
+        8,
+        0
+    ],
+    "Number of GPUs": 1,
+    "Current GPU": 0,
+    "GPU Available": true,
+    "CPU Cores": 24,
+    "CPU Threads": 24
+}

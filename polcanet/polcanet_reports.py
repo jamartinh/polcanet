@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 from typing import Tuple
 
@@ -10,10 +11,10 @@ from matplotlib import pyplot as plt
 from scipy.stats import gaussian_kde
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
-from collections import Counter
 
 SAVE_PATH = ""
 SAVE_FIG = False
+SAVE_FIG_PREFIX = ""
 saved_figures = Counter()
 
 
@@ -24,6 +25,17 @@ def get_save_path():
 def set_save_path(path):
     global SAVE_PATH
     SAVE_PATH = Path(path)
+
+
+def set_fig_prefix(prefix):
+    global SAVE_FIG_PREFIX
+    SAVE_FIG_PREFIX = prefix
+
+
+def get_fig_prefix():
+    if SAVE_FIG_PREFIX != "":
+        return "_" + SAVE_FIG_PREFIX
+    return ""
 
 
 def get_save_fig():
@@ -37,7 +49,7 @@ def set_save_fig(save_fig):
 
 def save_figure(name):
     if get_save_fig():
-        name = name.replace(".pdf", f"_{saved_figures[name]}.pdf")
+        name = name.replace(".pdf", f"{get_fig_prefix()}_{saved_figures[name]}.pdf")
         plt.savefig(get_save_path() / Path(name))
         saved_figures[name] += 1
 
@@ -57,6 +69,12 @@ def save_latex_table(df, name):
         )
         with open(get_save_path() / Path(name), "w") as f:
             f.write(latex_table)
+
+
+def save_text(text, name):
+    if get_save_fig():
+        with open(get_save_path() / Path(name), "w") as f:
+            f.write(text)
 
 
 def plot_reconstruction_mask(model, data, save_fig: str = None):
@@ -87,11 +105,8 @@ def plot_reconstruction_mask(model, data, save_fig: str = None):
     plt.title("Percentage error reduction by adding successive components")
     plt.legend()
     plt.tight_layout()
-    fig_name = "reconstruction_error_reduction.pdf"
+    fig_name = save_fig or "reconstruction_error_reduction.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
-
     plt.show()
 
 
@@ -142,10 +157,8 @@ def analyze_reconstruction_error(model, data, n_samples=10000, save_fig: str = N
 
     plt.legend()
     plt.tight_layout()
-    fig_name = "reconstruction_error_distribution.pdf"
+    fig_name = save_fig or "reconstruction_error_distribution.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
     plt.show()
 
     # Print some statistics
@@ -230,10 +243,8 @@ def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
 
     # Add a main title
     # plt.suptitle("Cosine Similarity Matrix of Latent Features")
-    fig_name = "scatter_correlation_matrix.pdf"
+    fig_name = save_fig or "scatter_correlation_matrix.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
     # Show plot
     plt.show()
 
@@ -368,11 +379,8 @@ def plot_correlation_matrix(corr_matrix, threshold=15, save_fig: str = None):
 
     # Tight layout for better spacing
     plt.tight_layout()
-    fig_name = "correlation_matrix.pdf"
+    fig_name = save_fig or "correlation_matrix.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
-
     # Show plot
     plt.show()
 
@@ -486,24 +494,29 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.set_title('Variance Distribution')
     ax.set_xlabel('Components')
     ax.set_ylabel('Normalized Variance')
+    ax.grid(True)
     ax.legend()
     plt.tight_layout()
     fig_name = "variance_distribution.pdf"
     save_figure(fig_name)
-    if save_figs:
-        plt.savefig(save_figs[0])
     plt.show()
 
     # Plot cumulative variance
+    # Compute cumulative explained variance ratio
     cumulative_variance = np.cumsum(normalized_variances)
+    # plot_components_cdf(cumulative_variance, n_components, title='Cumulative Variance', ax=ax)
+    # fig_name = save_fig or "cumulative_variance.pdf"
+    # save_figure(fig_name)
+
     components_90 = np.argmax(cumulative_variance >= 0.9) + 1
     components_95 = np.argmax(cumulative_variance >= 0.95) + 1
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
     ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance', color='black', alpha=0.7, linewidth=1,
             markersize=2)
     ax.set_title('Cumulative Variance')
     ax.set_xlabel('Components')
     ax.set_ylabel('Cumulative Variance')
+    ax.grid(True)
 
     # Add some reference lines
     ax.axhline(y=0.9, color='r', linestyle='--', lw=1,
@@ -511,11 +524,8 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
                label=f"95% by {components_95} ({round(100 * components_95 / n_components)}%) components")
     ax.legend()
-    plt.tight_layout()
     fig_name = "cumulative_variance.pdf"
     save_figure(fig_name)
-    if save_figs:
-        plt.savefig(save_figs[1])
     plt.show()
 
     # Analyze and plot variance concentration
@@ -548,12 +558,10 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     plt.tight_layout()
     fig_name = "variance_concentration.pdf"
     save_figure(fig_name)
-    if save_figs:
-        plt.savefig(save_figs[2])
     plt.show()
 
 
-def linearity_test_plot(model, x, y, save_fig: str = None):
+def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
     model.eval()
     shape = x.shape
     num_samples = shape[0]
@@ -574,7 +582,7 @@ def linearity_test_plot(model, x, y, save_fig: str = None):
 
         # Test Homogeneity
         #     Generate alpha values between -2 and 2
-        alpha = torch.linspace(-1, 1, steps=num_samples, device=x.device).unsqueeze(1)
+        alpha = torch.linspace(alpha_min, alpha_max, steps=num_samples, device=x.device).unsqueeze(1)
         xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
         alpha = alpha.repeat(1, fx_shape[1])
         yy_alpha = alpha * f(x)
@@ -616,10 +624,8 @@ def linearity_test_plot(model, x, y, save_fig: str = None):
     ax2.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
 
     plt.tight_layout()
-    fig_name = "linearity_test.pdf"
+    fig_name = save_fig or "linearity_test.pdf"
     save_figure(fig_name)
-    if save_fig:
-        plt.savefig(save_fig)
     plt.show()
     return additivity_corr, homogeneity_corr
 
@@ -637,7 +643,7 @@ def get_data_samples(model, data, num_samples):
     return latent_x, latent_y
 
 
-def linearity_tests_analysis(model, data, num_samples=1000, save_fig: str = None):
+def linearity_tests_analysis(model, data, alpha_min=-1, alpha_max=1, num_samples=1000, save_fig: str = None):
     """
         Analyze the linearity properties of the autoencoder's decoder.
 
@@ -650,4 +656,4 @@ def linearity_tests_analysis(model, data, num_samples=1000, save_fig: str = None
     latent_x, latent_y = get_data_samples(model, data, num_samples)
     latent_x = torch.tensor(latent_x, dtype=torch.float32, device=model.device)
     latent_y = torch.tensor(latent_y, dtype=torch.float32, device=model.device)
-    linearity_test_plot(model.decoder, latent_x, latent_y, save_fig=save_fig)
+    linearity_test_plot(model.decoder, latent_x, latent_y, alpha_min=alpha_min, alpha_max=alpha_max, save_fig=save_fig)

@@ -144,7 +144,7 @@ class LinearDecoder(nn.Module):
         self.latent_dim = latent_dim
         self.input_dim = input_dim
         self.prod_input_dim = int(np.prod(input_dim))
-        bias = True if act_fn is not None or bias else False
+        # bias = True if act_fn is not None or bias else False
 
         layers = []
         input_dim = latent_dim
@@ -171,12 +171,47 @@ class LinearDecoder(nn.Module):
         return x.view(-1, *self.input_dim)
 
 
+def dct_1d(x):
+    """
+    Compute the DCT-II (1D DCT) for each vector in a batch.
+
+    Args:
+    - x (torch.Tensor): Input tensor of shape (batch_size, n).
+
+    Returns:
+    - torch.Tensor: DCT-II transformed tensor of shape (batch_size, n).
+    """
+    N = x.size(-1)
+
+    # Create the frequency coefficients
+    k = torch.arange(N, dtype=x.dtype, device=x.device).view(1, -1)
+    n = torch.arange(N, dtype=x.dtype, device=x.device).view(-1, 1)
+
+    # Compute the DCT-II matrix
+    dct_matrix = torch.cos(math.pi / N * (n + 0.5) * k)
+
+    # Apply scaling for orthogonality
+    dct_matrix[:, 0] *= 1.0 / math.sqrt(2.0)
+    dct_matrix *= math.sqrt(2.0 / N)
+
+    # Perform the matrix multiplication (batch_size, n) @ (n, n) -> (batch_size, n)
+    return torch.matmul(x, dct_matrix)
+
+
 class EncoderWrapper(nn.Module):
     """
-    make the last activation of the encoder be a tanh
+    Wrapper class for an encoder module.
+    A Softsign activation function is applied to the output of the encoder and there is an optional factor scale
+    parameter that can be set to True to factor the scale of the latent vectors and return the unit vectors and
+    the magnitudes as a tuple.
     """
 
     def __init__(self, encoder, factor_scale=False):
+        """
+        Initializes the encoder wrapper with the encoder module and the factor scale parameter.
+        :param encoder: The encoder module.
+        :param factor_scale: Whether to factor the scale of the latent vectors.
+        """
         super().__init__()
         self.factor_scale = factor_scale
         if not factor_scale:
@@ -187,16 +222,22 @@ class EncoderWrapper(nn.Module):
     def forward(self, x):
         z = self.encoder(x)
         if self.factor_scale:
-            # Calculate the target increase with initial exponential function
-            target_increase = torch.exp(-1.0 * torch.arange(z.shape[1] - 1, -1, -1, dtype=torch.float32,device=z.device))
-            # Normalize the curve to start from 0
-            target_increase = target_increase - target_increase.min()
-            # Optionally, scale the curve to have a maximum of 1
-            target_increase = target_increase / target_increase.max()
+            # detect if model is in train
+            if self.training:
+                # Calculate the target increase with initial exponential function
+                # target_increase = torch.exp(-1.0 * torch.arange(z.shape[1] - 1, -1, -1, dtype=torch.float32,device=z.device))
+                # # Normalize the curve to start from 0
+                # target_increase = target_increase - target_increase.min()
+                # # Optionally, scale the curve to have a maximum of 1
+                # target_increase = target_increase / target_increase.max()
+                #
+                # # inject uniform noise to z following pos distribution taking into z now has range of [-1,1]
+                # z = z + z.mean(dim=0)*(torch.rand_like(z)-0.5) * target_increase
+                pass
 
-            # inject uniform noise to z following pos distribution taking into z now has range of [-1,1]
-            z = z + z.mean(dim=0)*(torch.rand_like(z)-0.5) * target_increase
-            z = torch.nn.functional.tanh(z)
+            # dct_1d(z)
+            z = torch.nn.functional.softsign(z)
+
             return z
 
             #  extract z_unitary
