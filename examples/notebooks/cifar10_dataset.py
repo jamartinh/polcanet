@@ -21,11 +21,10 @@
 # %autoreload 2
 
 # + editable=true slideshow={"slide_type": ""}
-import ipywidgets as widgets
 import matplotlib.pyplot as plt
-import seaborn
 
-import scienceplots
+# Use the 'science' style
+
 plt.style.use(['science','no-latex'])
 
 # Query the current default figure size
@@ -49,17 +48,13 @@ import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-from sklearn import datasets, decomposition
-
 # + editable=true slideshow={"slide_type": ""}
-from polcanet import LinearDecoder, PolcaNet, PolcaNetLoss
-from polcanet.example_aencoders import ConvEncoder, VGG, DenseEncoder, ConvDecoder
+from polcanet import PolcaNet
+import polcanet.utils as ut
+import polcanet.reports as report
 # -
 
-import polcanet.polcanet_reports as report
-
 # + editable=true slideshow={"slide_type": ""}
-import utils as ut
 import random
 
 random_seed = 5
@@ -76,18 +71,15 @@ exp = ut.ExperimentInfoHandler(
     description="POLCA-Net on cifar10 dataset",
     random_seed=random_seed,
 )
-report.set_save_fig(True)
-report.set_save_path(str(exp.get_experiment_folder()))
-print(f"Saving Images: {report.get_save_fig()}, saving in path: {report.get_save_path()}")
+ut.set_save_fig(True)
+ut.set_save_path(str(exp.get_experiment_folder()))
+print(f"Saving Images: {ut.get_save_fig()}, saving in path: {ut.get_save_path()}")
 # -
 
 # ### Load dataset
 
 # +
-import torchvision.datasets as datasets
-from torch.utils.data import DataLoader, TensorDataset
 from torchvision.datasets import CIFAR10
-from torchvision import transforms
 
 # Load CIFAR-10 dataset
 cifar_trainset = CIFAR10(root="data/CIFAR10", train=True, download=True, transform=None)
@@ -98,7 +90,7 @@ train_dataset = cifar_trainset.data / 255.0  #.reshape(-1, 32, 32, 3) / 255.0
 eval_dataset = cifar_testset.data / 255.0 # .reshape(-1, 32, 32, 3) / 255.0   
 
 y = np.array(cifar_trainset.targets)
-y_test = np.array(cifar_trainset.targets)
+y_test = np.array(cifar_testset.targets)
 
 X = np.array(train_dataset, dtype=np.float32)
 X = np.squeeze(X)
@@ -114,10 +106,10 @@ if X.ndim==4:
 train_dataset.shape, eval_dataset.shape, X.shape, X_test.shape, y.shape, y_test.shape, X[0].min(),X[0].max()
 
 # + editable=true slideshow={"slide_type": ""}
-report.set_fig_prefix("train")
+ut.set_fig_prefix("train")
 print("cifar10 train dataset images:")
 ut.plot_train_images(X, "", n=7)
-report.set_fig_prefix("test")
+ut.set_fig_prefix("test")
 print("cifar10 dataset images:")
 ut.plot_train_images(X_test, "", n=7)
 
@@ -148,8 +140,8 @@ latent_dim = pca.n_components
 assert N == input_dim[-1], "input_dim[-1] should match first matrix dimension N"
 assert M == input_dim[-2], "input_dim[-2] should match second matrix dimension M"
 
-from torchvision import models
-from polcanet.example_aencoders import ConvEncoder, ConvDecoder
+from polcanet.aencoders import ConvEncoder, LinearDecoder
+
 encoder = ConvEncoder(
     input_channels=3,
     latent_dim=latent_dim,
@@ -172,37 +164,37 @@ encoder = ConvEncoder(
 decoder = LinearDecoder(
     latent_dim=latent_dim,
     input_dim=input_dim,
-    hidden_dim=256,
+    hidden_dim=8*256,
     num_layers=2,
     # act_fn=act_fn,
     bias=False,
 )
 
-decoder = ConvDecoder(
-    latent_dim=latent_dim,
-    output_channels=3,
-    conv_dim=2,
-    num_layers=3,
-    initial_channels=8,
-    growth_factor=2,
-    act_fn=act_fn,
-    output_act_fn=torch.nn.Sigmoid,
-    final_output_size=(32, 32),
-)
+# decoder = ConvDecoder(
+#     latent_dim=latent_dim,
+#     output_channels=3,
+#     conv_dim=2,
+#     num_layers=3,
+#     initial_channels=8,
+#     growth_factor=2,
+#     act_fn= torch.nn.Identity, # act_fn,
+#     output_act_fn= torch.nn.Identity, # torch.nn.Sigmoid,
+#     final_output_size=(32, 32),
+# )
 
 
 model = PolcaNet(
     encoder=encoder,
     decoder=decoder,
     latent_dim=latent_dim,
-    alpha=0.1,  # ortgogonality loss
+    alpha=1.0,  # ortgogonality loss
     beta=1.0,  # variance sorting loss
     gamma=0,  # variance reduction loss
     device=device,
-    center=False,
-    factor_scale=False,
+    center=True,
+    factor_scale=True,
 )
-report.save_text(str(model), "model.txt")
+ut.save_text(str(model), "model.txt")
 model
 
 # +
@@ -217,7 +209,7 @@ model.train_model(data=X,batch_size=2*256, num_epochs=1000, report_freq=10, lr=1
 model.train_model(data=X,batch_size=2*256, num_epochs=1000, report_freq=10, lr=1e-4)
 
 # + jupyter={"outputs_hidden": false}
-model.train_model(data=X, batch_size=2*256, num_epochs=1000, report_freq=10, lr=1e-5)
+model.train_model(data=X, batch_size=2*256, num_epochs=100, report_freq=10, lr=1e-5)
 
 # + [markdown] editable=true slideshow={"slide_type": ""}
 # ## Evaluate results
@@ -226,9 +218,9 @@ model.train_model(data=X, batch_size=2*256, num_epochs=1000, report_freq=10, lr=
 # ## Evaluate results
 
 # + editable=true slideshow={"slide_type": ""}
-report.set_fig_prefix("train")
+ut.set_fig_prefix("train")
 report.analyze_reconstruction_error(model, X[:5000])
-report.set_fig_prefix("test")
+ut.set_fig_prefix("test")
 report.analyze_reconstruction_error(model, X_test[:5000])
 # -
 
@@ -237,38 +229,38 @@ latents, reconstructed = model.predict(X)
 # + editable=true slideshow={"slide_type": ""}
 # Assuming images are properly defined as before
 images = X[0:25]
-report.set_fig_prefix("train")
-ut.plot_reconstruction_comparison(model,pca,images,n_components=70,nrow=5)
+ut.set_fig_prefix("train")
+ut.plot_reconstruction_comparison(model,pca,images,n_components=288,nrow=5)
 images = X_test[0:25]
-report.set_fig_prefix("test")
-ut.plot_reconstruction_comparison(model,pca,images,n_components=70,nrow=5)
+ut.set_fig_prefix("test")
+ut.plot_reconstruction_comparison(model,pca,images,n_components=288,nrow=5)
 # -
 
-report.set_fig_prefix("train")
+ut.set_fig_prefix("train")
 report.orthogonality_test_analysis(model, X)
-report.set_fig_prefix("test")
+ut.set_fig_prefix("test")
 report.orthogonality_test_analysis(model, X_test)
 
-report.set_fig_prefix("train")
+ut.set_fig_prefix("train")
 report.variance_test_analysis(model, X)
-report.set_fig_prefix("test")
+ut.set_fig_prefix("test")
 report.variance_test_analysis(model, X_test)
 
-report.set_fig_prefix("train")
-report.linearity_tests_analysis(model, X,num_samples=100)
-report.set_fig_prefix("test")
-report.linearity_tests_analysis(model, X_test,num_samples=100)
+ut.set_fig_prefix("train")
+report.linearity_tests_analysis(model, X,alpha_min=0,num_samples=100)
+ut.set_fig_prefix("test")
+report.linearity_tests_analysis(model, X_test,alpha_min=0,num_samples=100)
 
 # ## Test Classification with two components on PCA vs POLCA Net
 
 # + editable=true slideshow={"slide_type": ""}
-# _ = ut.make_classification_report(model, pca, X, y)
+_ = ut.make_classification_report(model, pca, X_test, y_test,n_components=150)
 # -
 
 experiment_data = {
     "cifar10" : (X_test,model,pca),   
 }
-df_image_metrics = ut.image_metrics_table(experiment_data)
+df_image_metrics = ut.image_metrics_table(experiment_data, n_components=100)
 
 # + editable=true slideshow={"slide_type": ""}
 

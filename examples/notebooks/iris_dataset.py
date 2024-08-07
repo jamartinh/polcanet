@@ -21,6 +21,7 @@
 # %autoreload 2
 
 # +
+from IPython.display import display
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import scienceplots
@@ -47,14 +48,11 @@ import torch
 from sklearn import datasets, decomposition
 # -
 
-from polcanet import LinearDecoder, PolcaNet
-from polcanet.example_aencoders import (
-    DenseEncoder,
-    MinMaxScalerTorch,
-    StandardScalerTorch,
-)
+from polcanet import PolcaNet
+from polcanet.aencoders import DenseEncoder
+import polcanet.utils as ut
+import polcanet.reports as report
 
-import polcanet.polcanet_reports as report
 
 np.random.seed(1)
 
@@ -79,6 +77,7 @@ pca.explained_variance_ratio_
 # ### Fit POLCANet
 
 # +
+from polcanet.aencoders import LinearDecoder
 ae_input = X
 act_fn = torch.nn.SiLU
 input_dim = (ae_input.shape[1],)
@@ -148,27 +147,15 @@ report.linearity_tests_analysis(model_iris, X)
 
 # ## Polca Net vs. PCA
 
-def plot2d_analysis(X, y, title, legend=True):
-    fig = plt.figure(1, figsize=(5, 5))
-    ax = fig.add_subplot(111)
 
-    for name, label in [("Setosa", 0), ("Versicolour", 1), ("Virginica", 2)]:
-        ax.scatter(X[y == label, 0], X[y == label, 1], label=name)
-        ax.set_xlabel("component 0")
-        ax.set_ylabel("component 1")
-    if legend:
-        plt.legend(loc="center left", bbox_to_anchor=(1, 0.5))
-    plt.title(title)
-    plt.show()
-    return fig, ax
 
 
 o1 = widgets.Output()
 o2 = widgets.Output()
 with o1:
-    _, _ = plot2d_analysis(Xpca, y, title="PCA transform", legend=True)
+    _, _ = ut.plot2d_analysis(Xpca, y, title="PCA transform", legend=True)
 with o2:
-    _, _ = plot2d_analysis(latents, y, title="POLCA-Net latent")
+    _, _ = ut.plot2d_analysis(latents, y, title="POLCA-Net latent")
 layout = widgets.Layout(grid_template_columns="repeat(2, 600px)")
 accordion = widgets.GridBox(children=[o1, o2], layout=layout)
 display(accordion)
@@ -180,11 +167,11 @@ o3 = widgets.Output()
 o4 = widgets.Output()
 
 with o1:
-    fig1, ax1 = plot2d_analysis(X, y, "Original data two first componets", legend=False)
+    fig1, ax1 = ut.plot2d_analysis(X, y, "Original data two first componets", legend=False)
 
 with o2:
     latents, reconstructed = model_iris.predict(X, np.ones(latent_dim))
-    fig2, ax2 = plot2d_analysis(
+    fig2, ax2 = ut.plot2d_analysis(
         np.round(reconstructed, 1),
         y,
         title="Reconstructed with POLCA all componets",
@@ -193,7 +180,7 @@ with o2:
 
 with o3:
     latents, reconstructed = model_iris.predict(X, np.array([1, 1, 0, 0]))
-    fig3, ax3 = plot2d_analysis(
+    fig3, ax3 = ut.plot2d_analysis(
         np.round(reconstructed, 1),
         y,
         title="Reconstructed with POLCA two componets",
@@ -201,7 +188,7 @@ with o3:
     )
 
 with o4:
-    fig4, ax4 = plot2d_analysis(
+    fig4, ax4 = ut.plot2d_analysis(
         np.round(pca.inverse_transform(Xpca), 1),
         y,
         "Reconstructed with PCA two componets",

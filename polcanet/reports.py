@@ -1,5 +1,3 @@
-from collections import Counter
-from pathlib import Path
 from typing import Tuple
 
 import cmasher as cmr
@@ -12,102 +10,40 @@ from scipy.stats import gaussian_kde
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
 
-SAVE_PATH = ""
-SAVE_FIG = False
-SAVE_FIG_PREFIX = ""
-saved_figures = Counter()
+from polcanet.utils import save_figure
 
 
-def get_save_path():
-    return SAVE_PATH
-
-
-def set_save_path(path):
-    global SAVE_PATH
-    SAVE_PATH = Path(path)
-
-
-def set_fig_prefix(prefix):
-    global SAVE_FIG_PREFIX
-    SAVE_FIG_PREFIX = prefix
-
-
-def get_fig_prefix():
-    if SAVE_FIG_PREFIX != "":
-        return "_" + SAVE_FIG_PREFIX
-    return ""
-
-
-def get_save_fig():
-    return SAVE_FIG
-
-
-def set_save_fig(save_fig):
-    global SAVE_FIG
-    SAVE_FIG = save_fig
-
-
-def save_figure(name):
-    if get_save_fig():
-        name = name.replace(".pdf", f"{get_fig_prefix()}_{saved_figures[name]}.pdf")
-        plt.savefig(get_save_path() / Path(name))
-        saved_figures[name] += 1
-
-
-def save_latex_table(df, name):
-    if get_save_fig():
-        latex_table = df.reset_index().to_latex(
-            index=False,  # To not include the DataFrame index as a column in the table
-            caption="Comparison of ML Model Performance Metrics",
-            # The caption to appear above the table in the LaTeX document
-            label="tab:model_comparison",  # A label used for referencing the table within the LaTeX document
-            position="htbp",
-            # The preferred positions where the table should be placed in the document ('here', 'top', 'bottom', 'page')
-            # column_format="|l|l|l|l|",  # The format of the columns: left-aligned with vertical lines between them
-            escape=False,  # Disable escaping LaTeX special characters in the DataFrame
-            float_format="{:0.4f}".format  # Formats floats to two decimal places
-        )
-        with open(get_save_path() / Path(name), "w") as f:
-            f.write(latex_table)
-
-
-def save_text(text, name):
-    if get_save_fig():
-        with open(get_save_path() / Path(name), "w") as f:
-            f.write(text)
-
-
-def plot_reconstruction_mask(model, data,n_components=None, save_fig: str = None):
-    latents, reconstructed = model.predict(data)
-    inputs = data
-    arr_x = np.zeros((latents.shape[1], latents.shape[1]))
-    idx = np.tril_indices(latents.shape[1])
-    arr_x[idx[0], idx[1]] = 1
-    errors = []
-    for i in range(latents.shape[1]):
-        w = arr_x[i, :]
-        latents = model.encode(inputs)
-        reconstructed = model.decode(latents, w)
-        error = np.mean((inputs - reconstructed) ** 2)
-        errors.append(error)
-
-    errors = np.array(errors)
-    norm_errors = 100 * (errors / (np.max(errors)))
-
-    plt.plot(norm_errors,
-             label="reconstruction mse",
-             color="black",
-             alpha=0.7,
-             linewidth=1,
-             marker=None,
-             )
-
-    plt.title("Percentage error reduction by adding successive components")
-    plt.legend()
-    plt.tight_layout()
-    fig_name = save_fig or "reconstruction_error_reduction.pdf"
-    save_figure(fig_name)
-    plt.show()
+# def plot_reconstruction_mask(model, data,n_components=None, save_fig: str = None):
+#     latents, reconstructed = model.predict(data)
+#     inputs = data
+#     arr_x = np.zeros((latents.shape[1], latents.shape[1]))
+#     idx = np.tril_indices(latents.shape[1])
+#     arr_x[idx[0], idx[1]] = 1
+#     errors = []
+#     for i in range(latents.shape[1]):
+#         w = arr_x[i, :]
+#         latents = model.encode(inputs)
+#         reconstructed = model.decode(latents, w)
+#         error = np.mean((inputs - reconstructed) ** 2)
+#         errors.append(error)
+#
+#     errors = np.array(errors)
+#     norm_errors = 100 * (errors / (np.max(errors)))
+#
+#     plt.plot(norm_errors,
+#              label="reconstruction mse",
+#              color="black",
+#              alpha=0.7,
+#              linewidth=1,
+#              marker=None,
+#              )
+#
+#     plt.title("Percentage error reduction by adding successive components")
+#     plt.legend()
+#     plt.tight_layout()
+#     fig_name = save_fig or "reconstruction_error_reduction.pdf"
+#     save_figure(fig_name)
+#     plt.show()
 
 
 def analyze_reconstruction_error(model, data, n_samples=10000, save_fig: str = None):
@@ -491,7 +427,7 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.plot(components, normalized_variances, 'o-', label='Normalized Variances', color='black', alpha=0.7, linewidth=1,
             markersize=2)
     ax.plot(components, exp_fit, 'r--', label='Exponential ref')
-    ax.set_title('Variance Distribution')
+    ax.set_title('Variance Distribution of latent space')
     ax.set_xlabel('Components')
     ax.set_ylabel('Normalized Variance')
     ax.grid(True)
@@ -513,21 +449,22 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
     ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance', color='black', alpha=0.7, linewidth=1,
             markersize=2)
-    ax.set_title('Cumulative Variance')
+    ax.set_title('Cumulative Variance of latent space')
     ax.set_xlabel('Components')
     ax.set_ylabel('Cumulative Variance')
     ax.grid(True)
 
     # Add some reference lines
+    total_components = len(variances)
     ax.axhline(y=0.9, color='r', linestyle='--', lw=1,
-               label=f"90% by {components_90} ({round(100 * components_90 / n_components)}%) components")
+               label=f"90% by {(100 * components_90 / total_components):.1f}% ({components_90}) components")
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
-               label=f"95% by {components_95} ({round(100 * components_95 / n_components)}%) components")
+               label=f"95% by {(100 * components_95 / total_components):.1f}% ({components_95}) components")
     ax.legend()
     # set x-axis from 1 to n_components
     # ax.set_xlim(1, n_components)
     # set y-axis from 0 to 1
-    ax.set_ylim(0, 1)
+    ax.set_ylim(0, 1.05)
     ax.set_box_aspect(2 / 3)
     fig_name = "cumulative_variance.pdf"
     save_figure(fig_name)
@@ -543,7 +480,7 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     fig, ax = plt.subplots()
     ax.barh(range(1, top_n + 1), normalized_variances[:top_n], fill=False, edgecolor='k', linewidth=1)
 
-    ax.set_title('Variance Concentration')
+    ax.set_title('Variance Concentration of latent space')
     ax.set_ylabel('Components')
     ax.set_xlabel('Normalized Variance')
     # increase the limit of x-axis

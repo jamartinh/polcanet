@@ -1,7 +1,5 @@
-from polcanet.polcanet_standalone import PolcaNet, PolcaNetLoss
-from polcanet.polcanet_utils import LinearDecoder
-#from polcanet.polcanet_config import PolcaNetConfig
-#from polcanet.polcanet_model import PolcaNetPythae, LinearDecoderPythae
+from polcanet.polcanet import PolcaNet, PolcaNetLoss
+
 
 
 

@@ -343,8 +343,9 @@ class ConvDecoder(nn.Module):
         # Create transposed convolutional layers
         current_channels = intermediate_channels
         for i in range(num_layers):
-            next_channels = max(growth_factor*initial_channels // (growth_factor ** i), output_channels)
-            layers.append(ConvTransposeLayer(current_channels, next_channels, kernel_size=3, stride=2, padding=1, output_padding=1))
+            next_channels = max(growth_factor * initial_channels // (growth_factor ** i), output_channels)
+            layers.append(ConvTransposeLayer(current_channels, next_channels, kernel_size=3, stride=2, padding=1,
+                                             output_padding=1))
             layers.append(act_fn())
             current_channels = next_channels
 
@@ -386,21 +387,14 @@ class ConvAutoencoder(nn.Module):
 class VGG(nn.Module):
     def __init__(self, vgg_name, latent_dim, act_fn=nn.ReLU):
         super(VGG, self).__init__()
-        self.cfg = {
-                'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
-                'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512,
-                          512, 'M'],
-        }
+        self.cfg = {'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+                    'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+                    'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+                    'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512,
+                              512, 512, 'M'], }
         self.features = self._make_layers(self.cfg[vgg_name])
-        self.dense_layers = nn.Sequential(
-            nn.Linear(512, 512),
-            act_fn(),
-            nn.Linear(512, latent_dim),
-            act_fn(),
-            nn.Linear(latent_dim, latent_dim),
-        )
+        self.dense_layers = nn.Sequential(nn.Linear(512, 512), act_fn(), nn.Linear(512, latent_dim), act_fn(),
+                                          nn.Linear(latent_dim, latent_dim), )
 
     def forward(self, x):
         out = self.features(x)
@@ -416,8 +410,7 @@ class VGG(nn.Module):
             if x == 'M':
                 layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
             else:
-                layers += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
-                           nn.BatchNorm2d(x),
+                layers += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1), nn.BatchNorm2d(x),
                            nn.ReLU(inplace=True)]
                 in_channels = x
         layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
@@ -431,58 +424,77 @@ def test_vgg():
     print(y.size())
 
 
-def generate_2d_sinusoidal_data(N, M, num_samples):
-    data = []
-    for _ in range(num_samples):
-        x = np.linspace(0, 1, N)
-        y = np.linspace(0, 1, M)
-        xx, yy = np.meshgrid(x, y)
-
-        # Random phase shifts for x and y directions
-        phase_shift_x = np.random.uniform(0, 2 * np.pi)
-        phase_shift_y = np.random.uniform(0, 2 * np.pi)
-
-        # Random frequency multipliers for x and y directions
-        freq_multiplier_x = np.random.uniform(0.5, 1.5)
-        freq_multiplier_y = np.random.uniform(0.5, 1.5)
-
-        # Generate sinusoidal data with random phase and frequency
-        z = np.sin(2 * np.pi * freq_multiplier_x * xx + phase_shift_x) * np.cos(
-            2 * np.pi * freq_multiplier_y * yy + phase_shift_y)
-        data.append(z)
-
-    return np.array(data).astype(np.float32)
-
-
-def bent_function_image(N, M, a=1, b=1, c=1, d=1):
-    x = np.linspace(0, 1, M)
-    y = np.linspace(0, 1, N)
-    X, Y = np.meshgrid(x, y)
-    Z = np.cos(2 * np.pi * (a * X + b * Y)) + np.cos(2 * np.pi * (c * X - d * Y))
-    Z_norm = (Z - Z.min()) / (Z.max() - Z.min())
-    return Z_norm
-
-
-def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
+class LinearDecoder(nn.Module):
     """
-    Generate multiple random bent function images.
+        A linear decoder module for an autoencoder.
 
-    Parameters:
-    n_images (int): Number of images to generate
-    image_size (tuple): Size of each image as (height, width)
-    param_range (tuple): Range for random parameters (min, max)
+        This class implements a versatile linear decoder that accepts a vector of latent features
+        and outputs data in a specified shape. The decoder is fully linear (no nonlinearities) and
+        can have multiple linear layers.
 
-    Returns:
-    numpy.ndarray: Array of shape (n_images, height, width) containing the bent function images
+        Args:
+            latent_dim (int): Dimension of the latent vector.
+            input_dim (tuple): Desired shape of a single instance of the output data.
+            hidden_dim (int): Dimension of the hidden layers in the decoder (default is 256).
+            num_layers (int): Number of linear layers in the decoder (default is 1).
+
+        Attributes:
+            latent_dim (int): Dimension of the latent vector.
+            input_dim (tuple): Desired shape of a single instance of the output data.
+            prod_input_dim (int): Total number of elements in the output data, calculated as the product
+                              of the dimensions in input_dim.
+            decoder (nn.Sequential): Sequential container of linear layers.
+
+        Methods:
+            forward(x):
+                Passes the input latent vector through the linear layers and reshapes the output to
+                the specified output shape, including the batch dimension.
+
+        Example:
+            >>> latent_dim = 16
+            >>> input_dim = (3, 32, 32)  # Shape of a 32x32 RGB image
+            >>> num_layers = 2
+            >>> decoder = LinearDecoder(latent_dim, input_dim, num_layers)
+            >>> latent_vector = torch.randn((4, latent_dim))  # Batch of 4 latent vectors
+            >>> output = decoder(latent_vector)
+            >>> print(output.shape)
+            torch.Size([4, 3, 32, 32])
+
+        Example 2: Decoding to a vector shape
+            >>> latent_dim = 8
+            >>> input_dim = (20,)  # Shape of a vector with 20 elements
+            >>> num_layers = 3
+            >>> decoder = LinearDecoder(latent_dim, input_dim, num_layers)
+            >>> latent_vector = torch.randn((5, latent_dim))  # Batch of 5 latent vectors
+            >>> output = decoder(latent_vector)
+            >>> print(output.shape)
+            torch.Size([5, 20])
     """
 
-    images = np.zeros((num_samples, N, M))
+    def __init__(self, latent_dim, input_dim, hidden_dim=256, num_layers=1, act_fn=None, bias=False):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
+        self.prod_input_dim = int(np.prod(input_dim))
 
-    for i in range(num_samples):
-        # Generate random parameters
-        a, b, c, d = np.random.uniform(*param_range, size=4)
+        layers = []
+        input_dim = latent_dim
+        for i in range(num_layers - 1):
+            if i == 0:
+                layer = nn.Linear(input_dim, hidden_dim, bias=bias)
+                layers.append(layer)
 
-        # Generate image
-        images[i] = bent_function_image(N, M, a, b, c, d)
+            else:
+                layers.append(nn.Linear(hidden_dim, hidden_dim, bias=bias))
 
-    return images
+            if act_fn is not None:
+                layers.append(act_fn())
+
+        layers.append(nn.Linear(hidden_dim, self.prod_input_dim, bias=bias))
+        self.decoder = nn.Sequential(*layers)
+
+    def forward(self, z):
+        if isinstance(z, (tuple, list)):
+            z = z[0] * z[1]
+        x = self.decoder(z)
+        return x.view(-1, *self.input_dim)

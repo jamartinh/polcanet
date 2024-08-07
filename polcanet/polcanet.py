@@ -6,8 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
-from polcanet.polcanet_utils import EncoderWrapper
-
 
 class PolcaNetLoss(nn.Module):
     """
@@ -24,21 +22,18 @@ class PolcaNetLoss(nn.Module):
         self.beta = beta
         self.gamma = gamma
 
-        pos = torch.arange(latent_dim, dtype=torch.float32) ** 2
-        self.register_buffer('a', pos / latent_dim)  # normalized axis
-        target_decay = torch.exp(-decay_rate * torch.arange(latent_dim, dtype=torch.float32))
-        # self.register_buffer('ne', torch.exp(-0.5 * torch.arange(latent_dim, dtype=torch.float32)))
-        self.register_buffer('t', F.normalize(target_decay, p=1.0, dim=0))  # normalized target decay
-        # self.register_buffer('I', 1-torch.eye(latent_dim))  # identity matrix
+        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 2) / latent_dim
+        self.register_buffer('a', pos)  # normalized axis
 
-        self.loss_names = {
-                "loss": "Total Loss",
-                "rec": "Reconstruction Loss",
-                "ort": "Orthogonality Loss",
-                "com": "Center of Mass Loss",
-                "var": "Variance Distribution Loss"
+        # target_decay = torch.exp(-decay_rate * torch.arange(latent_dim, dtype=torch.float32))
+        # self.register_buffer('t', F.normalize(target_decay, p=1.0, dim=0))  # normalized target decay
 
-        }
+        self.loss_names = {"loss": "Total Loss",
+                           "rec": "Reconstruction Loss",
+                           "ort": "Orthogonality Loss",
+                           "com": "Center of Mass Loss",
+                           "var": "Variance Distribution Loss",
+                           }
 
     def forward(self, z, r, x):
         """
@@ -70,21 +65,10 @@ class PolcaNetLoss(nn.Module):
         # Purpose: Encourage latent dimensions to be uncorrelated
         # Method: Penalize off-diagonal elements of the cosine similarity matrix
         device = z.device
-        if self.alpha != 0:
+        L_ort = self.orthogonality_loss(z)  # + self.orthogonality_loss_pythagoras(z)
+        # L_ort = self.orthogonality_loss_pythagoras(z)
 
-            Z = F.normalize(z, p=2, dim=0)
-            S = torch.mm(Z.t(), Z)
-            # Set the correlation between the first two components to zero in the upper triangular part
-            # S[0, 1] *= 10  # Only need to set this one, not the symmetric one
-            idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
-            S_triu = S[idx0, idx1]
-            L_ort = torch.mean(S_triu ** 2)
-
-
-        else:
-            L_ort = torch.tensor([0], dtype=torch.float32, device=x.device)
-
-        # Compute and normalize variance
+        # Compute and normalize variance and energy
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
         e = torch.mean(z ** 2, dim=0)
@@ -97,7 +81,7 @@ class PolcaNetLoss(nn.Module):
             # L_com = torch.mean(z ** 2 * self.a, dim=0).mean() + torch.mean(v * self.a)
             L_com = torch.mean((w + e) * self.a, dim=0)
         else:
-            L_com = torch.tensor([0], dtype=torch.float32, device=x.device)
+            L_com = torch.tensor([0], dtype=torch.float32, device=device)
 
         # Exponential decay variance loss
         # Purpose: Encourage an exponential decay of variances across latent dimensions
@@ -105,7 +89,7 @@ class PolcaNetLoss(nn.Module):
         if self.gamma != 0:
             L_var = F.mse_loss(w, self.t)
         else:
-            L_var = torch.tensor([0], dtype=torch.float32, device=x.device)
+            L_var = torch.tensor([0], dtype=torch.float32, device=device)
 
         # Combine losses
         # Purpose: Balance all loss components for optimal latent representation
@@ -113,6 +97,78 @@ class PolcaNetLoss(nn.Module):
         L = L_rec + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + v.mean()
 
         return L, (L_rec, L_ort, L_com, L_var)
+
+    def orthogonality_loss(self, z):
+        if self.alpha == 0:
+            return torch.tensor([0], dtype=torch.float32, device=z.device)
+
+        Z = F.normalize(z, p=2, dim=0)
+        S = torch.mm(Z.t(), Z)
+        idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
+        S_triu = S[idx0, idx1]
+        loss = torch.mean(S_triu.square())
+        return loss
+
+    def orthogonality_loss_pythagoras(self, z):
+        """
+            Computes the orthogonality loss based on the Pythagorean property after normalizing
+            the feature vectors to unit vectors and scaling by 1/n, using squared difference.
+
+            Args:
+                z (torch.Tensor): A tensor of shape (batch_dim, feature_dim) representing
+                                  the feature vectors produced by the network for each sample
+                                  in the batch.
+
+            Returns:
+                torch.Tensor: A scalar tensor representing the orthogonality loss.
+
+            Theoretical Background:
+            ------------------------
+            For a set of vectors {z1, z2, ..., zn} in an n-dimensional space, when the vectors are normalized
+            to unit vectors and scaled by 1/n (where n is the feature dimension), the vectors are orthogonal if
+            and only if the following Pythagorean property holds:
+
+                ||(1/n) * (z1 + z2 + ... + zn)||^2 = 1
+
+            where n is the feature dimension.
+
+            This scaling simplifies the analysis because the expected norm of the sum of these scaled vectors
+            should be 1 when the vectors are orthogonal.
+
+            Implementation:
+            ----------------
+            Given a batch of feature vectors z of shape (batch_dim, feature_dim):
+
+            1. Normalize each feature vector to be a unit vector using F.normalize.
+            2. Scale the normalized vectors by 1/n.
+            3. Compute the sum of the scaled feature vectors for each sample in the batch: z_sum.
+            4. Compute the squared norm of the sum vector: ||z_sum||^2.
+            5. The loss is the squared difference between this squared norm and 1, averaged over the batch.
+
+            Example Usage:
+            --------------
+            z = torch.randn(32, 128)  # Batch of 32 samples, each with 128-dimensional features
+            loss = orthogonality_loss_with_scaling_squared(z)
+            """
+        if self.alpha == 0:
+            return torch.tensor([0], dtype=torch.float32, device=z.device)
+
+        z_unit = F.normalize(z, p=2, dim=1)  # Normalize each feature vector to be a unit vector
+        batch_size, n_features = z.size()
+
+        # Compute the squared magnitude of the sum
+        sum_squared_magnitude = torch.sum(torch.sum(z_unit, dim=0) ** 2)
+
+        # Compute the sum of squared magnitudes
+        sum_of_squared_magnitudes = torch.sum(torch.sum(z_unit ** 2, dim=1))
+
+        # The loss is the difference between these two values
+        # If features are orthogonal, this difference should be zero
+        loss = torch.abs(sum_squared_magnitude - sum_of_squared_magnitudes)
+
+        loss = loss / (batch_size * n_features)  # Normalize by total number of elements
+
+        return loss
 
 
 class PolcaNet(nn.Module):
@@ -125,10 +181,7 @@ class PolcaNet(nn.Module):
         beta (float): The weight for the center of mass loss.
         gamma (float): The weight for the low variance loss.
         device (str): The device to run the encoder on ("cpu" or "cuda").
-        encoder (examples.example_aencoders.BaseAutoEncoder): The base autoencoder encoder.
-        std_metrics (torch.Tensor): The standard deviation of the latent space.
-        mean_metrics (torch.Tensor): The mean of the latent space.
-        r_mean_metrics (torch.Tensor): The mean of the reconstruction error.
+        encoder (aencoders.BaseAutoEncoder): The base autoencoder encoder.
 
     Methods:
         forward(x): Encodes the input, adds the mean to the latent space, and decodes the result.
@@ -149,8 +202,8 @@ class PolcaNet(nn.Module):
         compute_losses(z, r, x): Computes the losses.
     """
 
-    def __init__(self, encoder, decoder, latent_dim, alpha=1.0, beta=1.0, gamma=0,
-                 device="cpu", center=True, factor_scale=False):
+    def __init__(self, encoder, decoder, latent_dim, alpha=1.0, beta=1.0, gamma=0, device="cpu", center=True,
+                 factor_scale=False):
         """
         Initialize PolcaNet with the provided parameters.
         """
@@ -175,11 +228,6 @@ class PolcaNet(nn.Module):
             self.decoder.encoder = None
             del self.decoder.encoder
 
-        # Define std_metrics, mean_metrics and as buffers
-        self.register_buffer("std_metrics", torch.zeros(latent_dim))
-        self.register_buffer("mean_metrics", torch.zeros(latent_dim))
-        self.register_buffer("r_mean_metrics", torch.zeros(1))
-
         self.polcanet_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma)
 
     def forward(self, x):
@@ -187,23 +235,24 @@ class PolcaNet(nn.Module):
         reconstruction = self.decoder(latent)
         return latent, reconstruction
 
-    def predict(self, in_x, mask=None):
+    def predict(self, in_x, mask=None, n_components=None):
         z = self.encode(in_x)
+        if n_components:
+            z = z[:, :n_components]
         r = self.decode(z, mask=mask)
         return z, r
 
     def encode(self, in_x):
         self.encoder.eval()
+        if isinstance(in_x, torch.Tensor):
+            x = in_x.detach().clone().to(self.device)
+        else:
+            x = torch.tensor(in_x, dtype=torch.float32, device=self.device, requires_grad=False)
+
         with torch.no_grad():
-            if isinstance(in_x, torch.Tensor):
-                x = in_x.detach().clone().to(self.device)
-            else:
-                x = torch.tensor(in_x, dtype=torch.float32, device=self.device, requires_grad=False)
+            z = self.encoder(x)
 
-            latent = self.encoder(x)
-            z = latent
-
-        return z.detach().cpu().numpy()
+        return z.cpu().numpy()
 
     def decode(self, z, mask=None):
         self.encoder.eval()
@@ -232,27 +281,11 @@ class PolcaNet(nn.Module):
 
         return r.cpu().numpy()
 
-    def update_metrics(self, z, r, x):
-        # make a random update with probability 0.25
-        if np.random.rand() < 0.5:
-            x = x.detach()
-            if isinstance(z, (tuple, list)):
-                z = z[0] * z[1]
-            z = z.detach()
-            r = r.detach()
-            self.r_mean_metrics += 0.01 * (torch.mean((x - r) ** 2) - self.r_mean_metrics)
-            self.std_metrics += 0.01 * (torch.std(z, dim=0) - self.std_metrics)
-            self.mean_metrics += 0.01 * (torch.mean(z, dim=0) - self.mean_metrics)
-
     def r_error(self, in_x, w=None):
         """Compute the reconstruction error"""
         z, r = self.predict(in_x, w)
         error = (in_x - r).reshape(in_x.shape[0], -1)
         return np.mean(error ** 2, axis=-1)
-
-    def score(self, in_x, w=None):
-        """Compute the reconstruction score"""
-        return np.abs(self.r_error(in_x, w) - self.r_mean_metrics.cpu().numpy())
 
     def to_device(self, device):
         """Move the encoder to the given device."""
@@ -275,8 +308,8 @@ class PolcaNet(nn.Module):
             fitter = None
 
         assert fitter is not None, "Data loader must be either a DataLoader or a numpy array or torch tensor"
-        epoch_progress = tqdm(fitter, desc="epoch", leave=True,
-                              total=num_epochs, miniters=report_freq, disable=bool(not verbose))
+        epoch_progress = tqdm(fitter, desc="epoch", leave=True, total=num_epochs, miniters=report_freq,
+                              disable=bool(not verbose))
         metrics = {}
         epoch = 0
         for epoch, metrics in epoch_progress:
@@ -341,5 +374,47 @@ class PolcaNet(nn.Module):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        self.update_metrics(z, r, x)
         return loss, aux_losses
+
+
+class EncoderWrapper(nn.Module):
+    """
+    Wrapper class for an encoder module.
+    A Softsign activation function is applied to the output of the encoder and there is an optional factor scale
+    parameter that can be set to True to factor the scale of the latent vectors and return the unit vectors and
+    the magnitudes as a tuple.
+    """
+
+    def __init__(self, encoder, factor_scale=False):
+        """
+        Initializes the encoder wrapper with the encoder module and the factor scale parameter.
+        :param encoder: The encoder module.
+        :param factor_scale: Whether to factor the scale of the latent vectors.
+        """
+        super().__init__()
+        self.factor_scale = factor_scale
+        if not factor_scale:
+            self.encoder = nn.Sequential(encoder, nn.Softsign())
+        else:
+            self.encoder = encoder
+
+    def forward(self, x):
+        z = self.encoder(x)
+        if self.factor_scale:
+            # detect if model is in train
+            # if self.training:
+            #     # Calculate the target increase with initial exponential function
+            #     target_increase = torch.exp(-1.0 * torch.arange(z.shape[1] - 1, -1, -1, dtype=torch.float32,device=z.device))
+            #     # Normalize the curve to start from 0
+            #     target_increase = target_increase - target_increase.min()
+            #     # Optionally, scale the curve to have a maximum of 1
+            #     target_increase = target_increase / target_increase.max()
+            #
+            #     # inject uniform noise to z following pos distribution taking into z now has range of [-1,1]
+            #     z = z + z.mean(dim=0)*(2*torch.rand_like(z)-0.5) * target_increase
+
+            z = torch.nn.functional.tanh(z)
+
+            return z
+
+        return z

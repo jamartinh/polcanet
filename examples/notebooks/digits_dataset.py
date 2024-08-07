@@ -24,7 +24,7 @@ import ipywidgets as widgets
 import matplotlib.pyplot as plt
 # +
 import scienceplots
-from IPython.display import display, Markdown
+from IPython.display import display
 
 type(scienceplots)
 plt.style.use(["science", "no-latex"])
@@ -50,15 +50,12 @@ import torch
 import torchinfo
 from sklearn import datasets
 
-from polcanet import LinearDecoder, PolcaNet
-from polcanet.example_aencoders import DenseEncoder
-
-import polcanet.polcanet_reports as report
+from polcanet import PolcaNet
+import polcanet.utils as ut
+import polcanet.reports as report
 
 # + editable=true slideshow={"slide_type": ""}
 import random
-
-import utils as ut
 
 random_seed = 5
 np.random.seed(random_seed)
@@ -74,9 +71,9 @@ exp = ut.ExperimentInfoHandler(
     description="POLCA-Net on digits dataset",
     random_seed=random_seed,
 )
-report.set_save_fig(True)
-report.set_save_path(str(exp.get_experiment_folder()))
-print(f"Saving Images: {report.get_save_fig()}, saving in path: {report.get_save_path()}")
+ut.set_save_fig(True)
+ut.set_save_path(str(exp.get_experiment_folder()))
+print(f"Saving Images: {ut.get_save_fig()}, saving in path: {ut.get_save_path()}")
 # -
 
 # ### Load dataset
@@ -146,8 +143,8 @@ summary = torchinfo.summary(
     col_names=["kernel_size", "output_size", "num_params"],
     row_settings=["var_names"],
 )
-report.save_text(str(model),"model.txt")
-report.save_text(str(summary),"model_summary.txt")
+ut.save_text(str(model), "model.txt")
+ut.save_text(str(summary), "model_summary.txt")
 
 # + editable=true slideshow={"slide_type": ""}
 model.to("cuda")

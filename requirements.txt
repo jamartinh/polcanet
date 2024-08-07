@@ -4,13 +4,9 @@ matplotlib
 scipy
 scikit-learn
 tabulate
-polcanet
 torch
 tqdm
-# pydantic
-# pythae
 setuptools
-
 ipython
 scikit-image
 ipywidgets

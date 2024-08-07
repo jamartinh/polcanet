@@ -2,20 +2,20 @@ import json
 import os
 import sys
 import textwrap
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from IPython.display import display
+from matplotlib import pyplot as plt
 from scipy.stats import wilcoxon
 from skimage import exposure
 from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
 from sklearn import decomposition
-from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -23,7 +23,71 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import minmax_scale
 from sklearn.svm import SVC
 
-from polcanet.polcanet_reports import save_figure, save_latex_table
+SAVE_PATH = ""
+SAVE_FIG = False
+SAVE_FIG_PREFIX = ""
+saved_figures = Counter()
+
+
+def get_save_path():
+    return SAVE_PATH
+
+
+def set_save_path(path):
+    global SAVE_PATH
+    SAVE_PATH = Path(path)
+
+
+def set_fig_prefix(prefix):
+    global SAVE_FIG_PREFIX
+    SAVE_FIG_PREFIX = prefix
+
+
+def get_fig_prefix():
+    if SAVE_FIG_PREFIX != "":
+        return "_" + SAVE_FIG_PREFIX
+    return ""
+
+
+def get_save_fig():
+    return SAVE_FIG
+
+
+def set_save_fig(save_fig):
+    global SAVE_FIG
+    SAVE_FIG = save_fig
+
+
+def save_figure(name):
+    if get_save_fig():
+        name = name.replace(".pdf", f"{get_fig_prefix()}_{saved_figures[name]}.pdf")
+        plt.savefig(get_save_path() / Path(name))
+        saved_figures[name] += 1
+
+
+def save_latex_table(df, name):
+    if get_save_fig():
+        latex_table = df.reset_index().to_latex(index=False,
+                                                # To not include the DataFrame index as a column in the table
+                                                caption="Comparison of ML Model Performance Metrics",
+                                                # The caption to appear above the table in the LaTeX document
+                                                label="tab:model_comparison",
+                                                # A label used for referencing the table within the LaTeX document
+                                                position="htbp",
+                                                # The preferred positions where the table should be placed in the document ('here', 'top', 'bottom', 'page')
+                                                # column_format="|l|l|l|l|",  # The format of the columns: left-aligned with vertical lines between them
+                                                escape=False,
+                                                # Disable escaping LaTeX special characters in the DataFrame
+                                                float_format="{:0.4f}".format  # Formats floats to two decimal places
+                                                )
+        with open(get_save_path() / Path(name), "w") as f:
+            f.write(latex_table)
+
+
+def save_text(text, name):
+    if get_save_fig():
+        with open(get_save_path() / Path(name), "w") as f:
+            f.write(text)
 
 
 def normalize_array(array, value_range=None, scale_each=False):
@@ -138,10 +202,11 @@ def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", 
 
 
 def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="viridis", nrow=5):
+    n_components = n_components or pca.n_components
+
     if n_components > pca.n_components:
         raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
 
-    n_components = n_components or pca.n_components
     latents = model.encode(images)
     ae_reconstructed = model.decode(latents[:, :n_components])
     r_pca = ReducedPCA(pca, n_components)
@@ -150,16 +215,8 @@ def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="
     pca_reconstructed = r_pca.inverse_transform(pca_latents)
     pca_reconstructed = pca_reconstructed.reshape(images.shape)
 
-    visualise_reconstructed_images(
-        [images, ae_reconstructed, pca_reconstructed],
-        title_list=[
-                "Original",
-                "POLCA-Net",
-                "PCA",
-        ],
-        nrow=nrow,
-        cmap=cmap,
-    )
+    visualise_reconstructed_images([images, ae_reconstructed, pca_reconstructed],
+                                   title_list=["Original", "POLCA-Net", "PCA", ], nrow=nrow, cmap=cmap, )
 
 
 def calculate_metrics(original_images, reconstructed_images):
@@ -176,29 +233,23 @@ def calculate_metrics(original_images, reconstructed_images):
         - 'Peak Signal-to-Noise Ratio': Average PSNR between original and reconstructed images (higher is better).
         - 'Structural Similarity Index': Average SSIM between original and reconstructed images (higher is better).
     """
-    metrics = {
-            'Normalized Mean Squared Error': [],
-            'Peak Signal-to-Noise Ratio': [],
-            'Structural Similarity Index': []
-    }
+    metrics = {'Normalized Mean Squared Error': [], 'Peak Signal-to-Noise Ratio': [], 'Structural Similarity Index': []}
 
     for orig, recon in zip(original_images, reconstructed_images):
         nmse = mean_squared_error(orig, recon) / np.mean(np.square(orig))
-        psnr = peak_signal_noise_ratio(orig, recon, data_range=255)
+        psnr = peak_signal_noise_ratio(orig, recon, data_range=1)
         # check if the image has a channel dimension and pass the param to the structural similarity function
         channel_axis = None if recon.ndim == 2 else 0
-        ssim = structural_similarity(orig, recon, data_range=255, channel_axis=channel_axis)
+        ssim = structural_similarity(orig, recon, data_range=1, channel_axis=channel_axis)
 
         metrics['Normalized Mean Squared Error'].append(nmse)
         metrics['Peak Signal-to-Noise Ratio'].append(psnr)
         metrics['Structural Similarity Index'].append(ssim)
 
     # Calculate average metrics
-    avg_metrics = {
-            'Normalized Mean Squared Error': np.mean(metrics['Normalized Mean Squared Error']),
-            'Peak Signal-to-Noise Ratio': np.mean(metrics['Peak Signal-to-Noise Ratio']),
-            'Structural Similarity Index': np.mean(metrics['Structural Similarity Index'])
-    }
+    avg_metrics = {'Normalized Mean Squared Error': np.mean(metrics['Normalized Mean Squared Error']),
+                   'Peak Signal-to-Noise Ratio': np.mean(metrics['Peak Signal-to-Noise Ratio']),
+                   'Structural Similarity Index': np.mean(metrics['Structural Similarity Index'])}
 
     return avg_metrics
 
@@ -224,11 +275,8 @@ def get_images_metrics_table(original_images, reconstructed_sets):
     metrics_table = pd.DataFrame(metrics_list)
 
     # Formatting the table
-    metrics_table = metrics_table.round({
-            'Normalized Mean Squared Error': 4,
-            'Peak Signal-to-Noise Ratio': 4,
-            'Structural Similarity Index': 4
-    })
+    metrics_table = metrics_table.round(
+        {'Normalized Mean Squared Error': 4, 'Peak Signal-to-Noise Ratio': 4, 'Structural Similarity Index': 4})
 
     # Move the 'Set' column to the first place
     cols = ['Method'] + [col for col in metrics_table.columns if col != 'Method']
@@ -296,22 +344,25 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
     ax.set_box_aspect(2 / 3)
 
 
-def image_metrics_table(experiment_data: dict):
+def image_metrics_table(experiment_data: dict, n_components=None):
     tables = []
+
     for k, (images, model, pca) in experiment_data.items():
         # Reconstruct the images using the autoencoder
-        _, ae_reconstructed = model.predict(images)
-        ae_reconstructed = ae_reconstructed.reshape(images.shape)
+        n_comps = n_components or pca.n_components
+        if n_comps > pca.n_components:
+            raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
+
+        latents = model.encode(images)
+        ae_reconstructed = model.decode(latents[:, :n_comps])
+        r_pca = ReducedPCA(pca, n_comps)
 
         # Reconstruct the images by PCA
-        pca_latents = pca.transform(images.reshape(images.shape[0], -1))
-        pca_reconstructed = pca.inverse_transform(pca_latents)
+        pca_latents = r_pca.transform(images.reshape(images.shape[0], -1))
+        pca_reconstructed = r_pca.inverse_transform(pca_latents)
         pca_reconstructed = pca_reconstructed.reshape(images.shape)
         original_images = np.squeeze(images)
-        reconstructed_sets = {
-                f"POLCA {k}": ae_reconstructed,
-                f"PCA {k}": pca_reconstructed
-        }
+        reconstructed_sets = {f"POLCA {k}": ae_reconstructed, f"PCA {k}": pca_reconstructed}
 
         item = get_images_metrics_table(original_images, reconstructed_sets)
         tables.append(item)
@@ -322,32 +373,34 @@ def image_metrics_table(experiment_data: dict):
     return df_table
 
 
-def make_classification_report(model, pca, X, y):
+def make_classification_report(model, pca, X, y, n_components=None):
     # Split the dataset into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    if n_components > pca.n_components:
+        raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
+
+    n_components = n_components or pca.n_components
+    # Transform the data using PCA
+    r_pca = ReducedPCA(pca, n_components)
 
     if X.ndim > 2:
-        X_train_pca = pca.transform(X_train.reshape(X_train.shape[0], -1))
-        X_test_pca = pca.transform(X_test.reshape(X_test.shape[0], -1))
+        X_train_pca = r_pca.transform(X_train.reshape(X_train.shape[0], -1))
+        X_test_pca = r_pca.transform(X_test.reshape(X_test.shape[0], -1))
     else:
-        X_train_pca = pca.transform(X_train)
-        X_test_pca = pca.transform(X_test)
+        X_train_pca = r_pca.transform(X_train)
+        X_test_pca = r_pca.transform(X_test)
 
-    print(X_train_pca.shape, X_test_pca.shape)
+    print("output shape from pca", X_train_pca.shape, X_test_pca.shape)
 
     # Transform the data using POLCA-Net
-    X_train_polca = model.predict(X_train)[0][:, :pca.n_components]
-    X_test_polca = model.predict(X_test)[0][:, :pca.n_components]
-    print(X_train_polca.shape, X_test_polca.shape)
+    X_train_polca = model.encode(X_train)[:, :n_components]
+    X_test_polca = model.encode(X_test)[:, :n_components]
+    print("output shape from POLCA", X_train_polca.shape, X_test_polca.shape)
 
     # Define classifiers
-    classifiers = {
-            "Logistic Regression": LogisticRegression(),
-            "Gaussian Naive Bayes": GaussianNB(),
-            "Linear SVM": SVC(kernel="linear", probability=True),
-            "Ridge Classifier": RidgeClassifier(),
-            "Perceptron": Perceptron(),
-    }
+    classifiers = {"Logistic Regression": LogisticRegression(solver="saga", n_jobs=10),
+                   "Gaussian Naive Bayes": GaussianNB(), "Linear SVM": SVC(kernel="linear", probability=False),
+                   "Ridge Classifier": RidgeClassifier(), "Perceptron": Perceptron(n_jobs=10), }
 
     # Train and evaluate classifiers on both PCA and POLCA-Net transformed datasets
     results = []
@@ -368,29 +421,15 @@ def make_classification_report(model, pca, X, y):
         cm_polca = confusion_matrix(y_test, y_pred_polca)
 
         # Append results
-        results.append(
-            {
-                    "Classifier": name,
-                    "Transformation": "PCA",
-                    "Accuracy": accuracy_pca,
-                    "Precision": report_pca["weighted avg"]["precision"],
-                    "Recall": report_pca["weighted avg"]["recall"],
-                    "F1-Score": report_pca["weighted avg"]["f1-score"],
-                    "Confusion Matrix": cm_pca,
-            }
-        )
+        results.append({"Classifier": name, "Transformation": "PCA", "Accuracy": accuracy_pca,
+                        "Precision": report_pca["weighted avg"]["precision"],
+                        "Recall": report_pca["weighted avg"]["recall"],
+                        "F1-Score": report_pca["weighted avg"]["f1-score"], "Confusion Matrix": cm_pca, })
 
-        results.append(
-            {
-                    "Classifier": name,
-                    "Transformation": "POLCA",
-                    "Accuracy": accuracy_polca,
-                    "Precision": report_polca["weighted avg"]["precision"],
-                    "Recall": report_polca["weighted avg"]["recall"],
-                    "F1-Score": report_polca["weighted avg"]["f1-score"],
-                    "Confusion Matrix": cm_polca,
-            }
-        )
+        results.append({"Classifier": name, "Transformation": "POLCA", "Accuracy": accuracy_polca,
+                        "Precision": report_polca["weighted avg"]["precision"],
+                        "Recall": report_polca["weighted avg"]["recall"],
+                        "F1-Score": report_polca["weighted avg"]["f1-score"], "Confusion Matrix": cm_polca, })
 
     # Create a DataFrame to display the results
     results_df = pd.DataFrame(results)
@@ -429,11 +468,8 @@ def make_classification_report(model, pca, X, y):
             better_method = "No Significant Difference"
 
         # Store the results
-        wilcoxon_results[metric] = {
-                'Wilcoxon Test Statistic': stat,
-                'P-Value': p_value,
-                'Significant (p < 0.05)': f'Yes, {better_method} is better' if p_value < 0.05 else 'No better method'
-        }
+        wilcoxon_results[metric] = {'Wilcoxon Test Statistic': stat, 'P-Value': p_value,
+                                    'Significant (p < 0.05)': f'Yes, {better_method} is better' if p_value < 0.05 else 'No better method'}
 
     # Convert the results to a DataFrame
     df_wilcoxon = pd.DataFrame(wilcoxon_results).T
@@ -505,8 +541,8 @@ def generate_model_summary_markdown(model_structure):
 
     # Estimate memory usage (these are rough estimates and may need adjustment)
     params_size = total_params * 4 / (1024 * 1024)  # Assuming 4 bytes per parameter
-    input_size = sum(eval(layer['output_shape'])[1] * eval(layer['output_shape'])[2]
-                     for layer in model_structure if 'output_shape' in layer) * 4 / (1024 * 1024)
+    input_size = sum(eval(layer['output_shape'])[1] * eval(layer['output_shape'])[2] for layer in model_structure if
+                     'output_shape' in layer) * 4 / (1024 * 1024)
     forward_backward_size = input_size * 2  # Rough estimate
     total_size = params_size + input_size + forward_backward_size
 
@@ -514,9 +550,9 @@ def generate_model_summary_markdown(model_structure):
     col_widths = [50, 20, 20, 20, 20]
 
     # Create header
-    header = "| " + " | ".join(word.ljust(width) for word, width in zip(
-        ["Layer (type (var_name))", "Kernel Shape", "Output Shape", "Param #", "Mult-Adds"],
-        col_widths)) + " |"
+    header = "| " + " | ".join(word.ljust(width) for word, width in
+                               zip(["Layer (type (var_name))", "Kernel Shape", "Output Shape", "Param #", "Mult-Adds"],
+                                   col_widths)) + " |"
     separator = "|" + "|".join("-" * (width + 2) for width in col_widths) + "|"
 
     rows = [header, separator]
@@ -587,25 +623,15 @@ class ExperimentInfoHandler:
         return self.experiment_folder / f"{str_name}"
 
     def add_experiment_info_to_folder(self):
-        info = {
-                "Experiment Name": self.experiment_name,
-                "Experiment Description": self.experiment_description,
-                "Random Seed": self.random_seed,
-                "Date and Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "Experiment Folder": str(self.experiment_folder),
-                "Python Version": sys.version,
-                "PyTorch Version": torch.__version__,
-                "CUDA Version": torch.version.cuda,
-                "CUDNN Version": torch.backends.cudnn.version(),
-                "Device": torch.cuda.get_device_name(0),
+        info = {"Experiment Name": self.experiment_name, "Experiment Description": self.experiment_description,
+                "Random Seed": self.random_seed, "Date and Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "Experiment Folder": str(self.experiment_folder), "Python Version": sys.version,
+                "PyTorch Version": torch.__version__, "CUDA Version": torch.version.cuda,
+                "CUDNN Version": torch.backends.cudnn.version(), "Device": torch.cuda.get_device_name(0),
                 # Add the name type or class of the gpu if any
-                "GPU Type": torch.cuda.get_device_capability(0),
-                "Number of GPUs": torch.cuda.device_count(),
-                "Current GPU": torch.cuda.current_device(),
-                "GPU Available": torch.cuda.is_available(),
-                "CPU Cores": os.cpu_count(),
-                "CPU Threads": torch.get_num_threads()
-        }
+                "GPU Type": torch.cuda.get_device_capability(0), "Number of GPUs": torch.cuda.device_count(),
+                "Current GPU": torch.cuda.current_device(), "GPU Available": torch.cuda.is_available(),
+                "CPU Cores": os.cpu_count(), "CPU Threads": torch.get_num_threads()}
         with open(self.experiment_folder / "experiment_info.json", "w") as f:
             json.dump(info, f, indent=4)
 
@@ -749,3 +775,60 @@ class ReducedPCA:
         :return: Array-like of shape (n_samples, n_features)
         """
         return np.dot(X_transformed, self.components_) + self.mean_
+
+
+def generate_2d_sinusoidal_data(N, M, num_samples):
+    data = []
+    for _ in range(num_samples):
+        x = np.linspace(0, 1, N)
+        y = np.linspace(0, 1, M)
+        xx, yy = np.meshgrid(x, y)
+
+        # Random phase shifts for x and y directions
+        phase_shift_x = np.random.uniform(0, 2 * np.pi)
+        phase_shift_y = np.random.uniform(0, 2 * np.pi)
+
+        # Random frequency multipliers for x and y directions
+        freq_multiplier_x = np.random.uniform(0.5, 1.5)
+        freq_multiplier_y = np.random.uniform(0.5, 1.5)
+
+        # Generate sinusoidal data with random phase and frequency
+        z = np.sin(2 * np.pi * freq_multiplier_x * xx + phase_shift_x) * np.cos(
+            2 * np.pi * freq_multiplier_y * yy + phase_shift_y)
+        data.append(z)
+
+    return (1 + np.array(data).astype(np.float32)) / 2.0
+
+
+def bent_function_image(N, M, a=1, b=1, c=1, d=1):
+    x = np.linspace(0, 1, M)
+    y = np.linspace(0, 1, N)
+    X, Y = np.meshgrid(x, y)
+    Z = np.cos(2 * np.pi * (a * X + b * Y)) + np.cos(2 * np.pi * (c * X - d * Y))
+    Z_norm = (Z - Z.min()) / (Z.max() - Z.min())
+    return Z_norm
+
+
+def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
+    """
+    Generate multiple random bent function images.
+
+    Parameters:
+    n_images (int): Number of images to generate
+    image_size (tuple): Size of each image as (height, width)
+    param_range (tuple): Range for random parameters (min, max)
+
+    Returns:
+    numpy.ndarray: Array of shape (n_images, height, width) containing the bent function images
+    """
+
+    images = np.zeros((num_samples, N, M))
+
+    for i in range(num_samples):
+        # Generate random parameters
+        a, b, c, d = np.random.uniform(*param_range, size=4)
+
+        # Generate image
+        images[i] = bent_function_image(N, M, a, b, c, d)
+
+    return images
