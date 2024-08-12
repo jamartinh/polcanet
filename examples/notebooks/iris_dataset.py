@@ -1,11 +1,11 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: ipynb,py:light
+#     formats: ipynb,py:percent
 #     text_representation:
 #       extension: .py
-#       format_name: light
-#       format_version: '1.5'
+#       format_name: percent
+#       format_version: '1.3'
 #       jupytext_version: 1.16.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
@@ -13,15 +13,14 @@
 #     name: python3
 # ---
 
-# + [markdown] editable=true slideshow={"slide_type": ""}
+# %% [markdown]
 # # **P**rincipal **O**rthogonal **L**atent **C**omponents **A**nalysis Net (POLCA-Net)
-# -
 
+# %%
 # %load_ext autoreload
 # %autoreload 2
 
-# +
-from IPython.display import display
+# %%
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import scienceplots
@@ -46,38 +45,48 @@ print(f"New default figure size: {new_fig_size}")
 import numpy as np
 import torch
 from sklearn import datasets, decomposition
-# -
 
-from polcanet import PolcaNet
-from polcanet.aencoders import DenseEncoder
-import polcanet.utils as ut
+# %%
+from polcanet import LinearDecoder, PolcaNet
+from polcanet.aencoders import (
+    DenseEncoder,
+    MinMaxScalerTorch,
+    StandardScalerTorch,
+)
+
+# %%
 import polcanet.reports as report
 
-
+# %%
 np.random.seed(1)
 
+# %%
 torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.profile(False)
 torch.autograd.profiler.emit_nvtx(False)
 
+# %% [markdown]
 # ### Load iris dataset
 
+# %%
 iris = datasets.load_iris()
 X = iris.data
 y = iris.target
 X.shape, X[0].shape
 
+# %% [markdown]
 # ### Fit standard sklearn PCA
 
+# %%
 pca = decomposition.PCA(n_components=2)
 pca.fit(X)
 Xpca = pca.transform(X)
 pca.explained_variance_ratio_
 
+# %% [markdown]
 # ### Fit POLCANet
 
-# +
-from polcanet.aencoders import LinearDecoder
+# %%
 ae_input = X
 act_fn = torch.nn.SiLU
 input_dim = (ae_input.shape[1],)
@@ -112,66 +121,87 @@ model_iris = PolcaNet(
     # scaler = StandardScalerTorch(),
 )
 model_iris
-# -
 
+# %%
 model_iris.to("cuda")
 model_iris.train_model(
     data=X, batch_size=512, num_epochs=10000, report_freq=100, lr=1e-3
 )
 
-# + jupyter={"outputs_hidden": false}
+# %%
 model_iris.train_model(
     data=X, batch_size=512, num_epochs=10000, report_freq=100, lr=1e-4
 )
 
-# + jupyter={"outputs_hidden": false}
+# %%
 model_iris.train_model(
     data=X, batch_size=512, num_epochs=10000, report_freq=100, lr=1e-5
 )
-# -
 
+# %% [markdown]
 # ## Evaluate results
 
+# %%
 report.analyze_reconstruction_error(model_iris, X)
 
+# %%
 latents, reconstructed = model_iris.predict(X)
 
+# %%
 report.analyze_latent_space(model_iris, latents=latents)
 
+# %%
 report.orthogonality_test_analysis(model_iris, X)
 
+# %%
 report.variance_test_analysis(model_iris, X)
 
+# %%
 report.linearity_tests_analysis(model_iris, X)
 
 
+# %% [markdown]
 # ## Polca Net vs. PCA
 
+# %%
+def plot2d_analysis(X, y, title, legend=True):
+    fig = plt.figure(1, figsize=(5, 5))
+    ax = fig.add_subplot(111)
+
+    for name, label in [("Setosa", 0), ("Versicolour", 1), ("Virginica", 2)]:
+        ax.scatter(X[y == label, 0], X[y == label, 1], label=name)
+        ax.set_xlabel("component 0")
+        ax.set_ylabel("component 1")
+    if legend:
+        plt.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+    plt.title(title)
+    plt.show()
+    return fig, ax
 
 
-
+# %%
 o1 = widgets.Output()
 o2 = widgets.Output()
 with o1:
-    _, _ = ut.plot2d_analysis(Xpca, y, title="PCA transform", legend=True)
+    _, _ = plot2d_analysis(Xpca, y, title="PCA transform", legend=True)
 with o2:
-    _, _ = ut.plot2d_analysis(latents, y, title="POLCA-Net latent")
+    _, _ = plot2d_analysis(latents, y, title="POLCA-Net latent")
 layout = widgets.Layout(grid_template_columns="repeat(2, 600px)")
 accordion = widgets.GridBox(children=[o1, o2], layout=layout)
 display(accordion)
 
-# +
+# %%
 o1 = widgets.Output()
 o2 = widgets.Output()
 o3 = widgets.Output()
 o4 = widgets.Output()
 
 with o1:
-    fig1, ax1 = ut.plot2d_analysis(X, y, "Original data two first componets", legend=False)
+    fig1, ax1 = plot2d_analysis(X, y, "Original data two first componets", legend=False)
 
 with o2:
     latents, reconstructed = model_iris.predict(X, np.ones(latent_dim))
-    fig2, ax2 = ut.plot2d_analysis(
+    fig2, ax2 = plot2d_analysis(
         np.round(reconstructed, 1),
         y,
         title="Reconstructed with POLCA all componets",
@@ -180,7 +210,7 @@ with o2:
 
 with o3:
     latents, reconstructed = model_iris.predict(X, np.array([1, 1, 0, 0]))
-    fig3, ax3 = ut.plot2d_analysis(
+    fig3, ax3 = plot2d_analysis(
         np.round(reconstructed, 1),
         y,
         title="Reconstructed with POLCA two componets",
@@ -188,7 +218,7 @@ with o3:
     )
 
 with o4:
-    fig4, ax4 = ut.plot2d_analysis(
+    fig4, ax4 = plot2d_analysis(
         np.round(pca.inverse_transform(Xpca), 1),
         y,
         "Reconstructed with PCA two componets",
@@ -200,7 +230,7 @@ layout = widgets.Layout(grid_template_columns="repeat(2, 450px)")
 accordion = widgets.GridBox(children=[o1, o2, o3, o4], layout=layout)
 display(accordion)
 
-# +
+# %%
 latents, reconstructed = model_iris.predict(X)
 vectors = []
 labels = ["Setosa", "Versicolour", "Virginica"]
@@ -213,7 +243,7 @@ plt.violinplot(vectors, showmeans=False, showmedians=True)
 plt.suptitle("Polca Analysis of the summation of latent orthogonal components")
 plt.show()
 
-# +
+# %%
 import seaborn as sns
 
 o1 = widgets.Output()
@@ -236,14 +266,17 @@ with o2:
 layout = widgets.Layout(grid_template_columns="repeat(2, 500px)")
 accordion = widgets.GridBox(children=[o1, o2], layout=layout)
 display(accordion)
-# -
 
+# %%
 model_iris.std_metrics
 
+# %%
 model_iris.mean_metrics
 
+# %% [markdown]
 # ## Test Classification with two components on PCA vs POLCA Net
 
+# %%
 import pandas as pd
 from scipy.stats import ttest_rel
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
@@ -252,13 +285,16 @@ from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import SVC
 
+# %%
 # Split the dataset into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=1)
 
+# %%
 X_train_pca = pca.transform(X_train)
 X_test_pca = pca.transform(X_test)
 X_train_pca.shape, X_test_pca.shape
 
+# %%
 # Transform the data using POLCA-Net
 X_train_polca = model_iris.predict(X_train, np.array([1, 1, 0, 0]))[0][:, :2]
 #X_train_polca = model_iris.predict(X_trai)[0][:, :pca.n_components]
@@ -266,6 +302,7 @@ X_test_polca = model_iris.predict(X_test, np.array([1, 1, 0, 0]))[0][:, :2]
 #X_test_polca = model_iris.predict(X_test)[0][:, :pca.n_components]
 X_train_polca.shape, X_test_polca.shape
 
+# %%
 # Define classifiers
 classifiers = {
     "Logistic Regression": LogisticRegression(),
@@ -275,7 +312,7 @@ classifiers = {
     "Perceptron": Perceptron(),
 }
 
-# +
+# %%
 # Train and evaluate classifiers on both PCA and POLCA-Net transformed datasets
 results = []
 
@@ -314,12 +351,13 @@ for name, clf in classifiers.items():
             "F1-Score": report_polca["weighted avg"]["f1-score"],
         }
     )
-# -
 
+# %%
 # Create a DataFrame to display the results
 results_df = pd.DataFrame(results)
 results_df
 
+# %%
 # Statistical test: Paired t-test for accuracies
 comparison_metrics = ["Accuracy", "Precision", "Recall", "F1-Score"]
 print(f"\nPaired t-test results:")
@@ -342,6 +380,6 @@ for comparison_metric in comparison_metrics:
         f"\tThere is {ans} statistically significant difference between the PCA and POLCA-Net transformations."
     )
 
+# %%
 
-
-
+# %%

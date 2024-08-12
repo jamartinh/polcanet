@@ -137,7 +137,7 @@ def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
             color = np.array([color for _ in range(latents.shape[0])])
             x = latents[:, j]
             y = latents[:, i]
-            axes[i - 1, j].scatter(x, y, s=1.0, c=color)  # Make markers small
+            axes[i - 1, j].scatter(x, y, s=1.0, c=color, rasterized=True)  # Make markers small
             # axes[i - 1, j].set_facecolor(color)
             axes[i - 1, j].axis('square')
 
@@ -464,7 +464,7 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     # set x-axis from 1 to n_components
     # ax.set_xlim(1, n_components)
     # set y-axis from 0 to 1
-    ax.set_ylim(0, 1.05)
+    ax.set_ylim(0, 1)
     ax.set_box_aspect(2 / 3)
     fig_name = "cumulative_variance.pdf"
     save_figure(fig_name)
@@ -503,15 +503,15 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     plt.show()
 
 
-def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
+def linearity_test_plot_old(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
     model.eval()
     shape = x.shape
     num_samples = shape[0]
-    x = x.view(num_samples, -1)
-    y = y.view(num_samples, -1)
+    x = x.view(shape[0], -1)
+    y = y.view(shape[0], -1)
 
     def f(z):
-        return model(z).detach().view(num_samples, -1)
+        return model(z).detach().view(shape[0], -1)
 
     with torch.no_grad():
         # Test Additivity
@@ -524,7 +524,7 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
 
         # Test Homogeneity
         #     Generate alpha values between -2 and 2
-        alpha = torch.linspace(alpha_min, alpha_max, steps=num_samples, device=x.device).unsqueeze(1)
+        alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
         xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
         alpha = alpha.repeat(1, fx_shape[1])
         yy_alpha = alpha * f(x)
@@ -533,10 +533,9 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         alpha_colors = alpha.cpu().numpy().flatten()
         homogeneity_corr = np.corrcoef(xx_alpha, yy_alpha)[0, 1]
 
-    # Additivity plot
-    # Plotting
     fig, (ax1, ax2) = plt.subplots(1, 2)
-    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1)
+    print(xx.shape)
+    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
     min_val = min(xx.min(), yy.min())
     max_val = max(xx.max(), yy.max())
     ax1.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
@@ -549,7 +548,8 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
     ax1.set_aspect("equal")
 
     # Homogeneity plot
-    scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1)
+    print(xx_alpha.shape)
+    scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
     min_val = min(xx_alpha.min(), yy_alpha.min())
     max_val = max(xx_alpha.max(), yy_alpha.max())
     ax2.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
@@ -570,6 +570,96 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
     save_figure(fig_name)
     plt.show()
     return additivity_corr, homogeneity_corr
+
+
+def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
+    model.eval()
+    shape = x.shape
+    num_samples = shape[0]
+    x = x.view(shape[0], -1)
+    y = y.view(shape[0], -1)
+
+    def f(z):
+        return model(z).detach().view(shape[0], -1)
+
+    with torch.no_grad():
+        # Test Additivity
+        xx = f(x + y)
+        fx_shape = xx.shape
+        yy = f(x) + f(y)
+        xx = xx.cpu().numpy().flatten()
+        yy = yy.cpu().numpy().flatten()
+        additivity_corr = np.corrcoef(xx, yy)[0, 1]
+
+        # Test Homogeneity
+        alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
+        xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
+        alpha = alpha.repeat(1, fx_shape[1])
+        yy_alpha = alpha * f(x)
+        xx_alpha = xx_alpha.cpu().numpy().flatten()
+        yy_alpha = yy_alpha.cpu().numpy().flatten()
+        alpha_colors = alpha.cpu().numpy().flatten()
+        homogeneity_corr = np.corrcoef(xx_alpha, yy_alpha)[0, 1]
+
+        # Test Lipschitz condition
+        # We calculate |f(x) - f(y)| and |x - y|
+        f_x = f(x)
+        f_y = f(y)
+        diff_fxy = torch.norm(f_x - f_y, dim=1)
+        diff_xy = torch.norm(x - y, dim=1)
+        diff_fxy = diff_fxy.cpu().numpy()
+        diff_xy = diff_xy.cpu().numpy()
+        lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
+
+    # Plotting results
+    #fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+
+    # Additivity plot
+    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
+    min_val = min(xx.min(), yy.min())
+    max_val = max(xx.max(), yy.max())
+    ax1.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
+    ax1.set_xlabel(r"$f(x + y)$")
+    ax1.set_ylabel(r"$f(x) + f(y)$")
+    ax1.set_title(f"Additivity:\n{additivity_corr:.2f}")
+    ax1.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
+    ax1.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
+    ax1.set_aspect("equal")
+    ax1.axis("square")
+
+    # Homogeneity plot
+    scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
+
+    min_val = min(xx_alpha.min(), yy_alpha.min())
+    max_val = max(xx_alpha.max(), yy_alpha.max())
+    ax2.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
+    ax2.set_xlabel(r"$f(\alpha x)$")
+    ax2.set_ylabel(r"$\alpha f(x)$")
+    ax2.set_title(f"Homogeneity:\n{homogeneity_corr:.2f}")
+    ax2.set_aspect("equal")
+    ax2.axis("square")
+
+    fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
+    ax2.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
+    ax2.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
+
+    # # Lipschitz condition plot
+    # ax3.scatter(diff_xy, diff_fxy, c='k', alpha=0.7, s=2, rasterized=True)
+    # ax3.set_xlim(min(diff_xy),max(diff_xy))
+    # ax3.set_xlabel(r"$|x - y|$")
+    # ax3.set_ylabel(r"$|f(x) - f(y)|$")
+    # ax3.set_title(f"Lipschitz:\n{lipschitz_corr:.2f}")
+    # ax3.set_aspect("equal")
+    # ax3.axis("square")
+
+    plt.tight_layout()
+
+    fig_name = save_fig or "linearity_test.pdf"
+    save_figure(fig_name)
+    plt.show()
+
+    return additivity_corr, homogeneity_corr, lipschitz_corr
 
 
 def get_data_samples(model, data, num_samples):

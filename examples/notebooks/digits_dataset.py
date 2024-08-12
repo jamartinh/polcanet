@@ -1,11 +1,11 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: ipynb,py:light
+#     formats: ipynb,py:percent
 #     text_representation:
 #       extension: .py
-#       format_name: light
-#       format_version: '1.5'
+#       format_name: percent
+#       format_version: '1.3'
 #       jupytext_version: 1.16.4
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
@@ -13,48 +13,31 @@
 #     name: python3
 # ---
 
-# + [markdown] editable=true slideshow={"slide_type": ""}
+# %% [markdown]
 # # **P**rincipal **O**rthogonal **L**atent **C**omponents **A**nalysis Net (POLCA-Net)
-# -
 
+# %%
 # %load_ext autoreload
 # %autoreload 2
 
+# %%
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
-# +
-import scienceplots
 from IPython.display import display
 
-type(scienceplots)
-plt.style.use(["science", "no-latex"])
 
-# Query the current default figure size
-current_fig_size = plt.rcParams["figure.figsize"]
-print(f"Current default figure size: {current_fig_size}")
-
-# Define a scalar factor
-scalar_factor = 1.5
-
-# Multiply the current figure size by the scalar factor
-new_fig_size = [size * scalar_factor for size in current_fig_size]
-
-# Set the new default figure size
-plt.rcParams["figure.figsize"] = new_fig_size
-
-print(f"New default figure size: {new_fig_size}")
-# -
-
+# %%
 import numpy as np
 import torch
 import torchinfo
 from sklearn import datasets
 
-from polcanet import PolcaNet
-import polcanet.utils as ut
+# %%
 import polcanet.reports as report
+import polcanet.utils as ut
+from polcanet import PolcaNet
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
 import random
 
 random_seed = 5
@@ -67,38 +50,45 @@ torch.autograd.profiler.profile(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 exp = ut.ExperimentInfoHandler(
-    name="digits_dataset_8_components",
+    name="digits_dataset_8",
     description="POLCA-Net on digits dataset",
     random_seed=random_seed,
 )
 ut.set_save_fig(True)
 ut.set_save_path(str(exp.get_experiment_folder()))
 print(f"Saving Images: {ut.get_save_fig()}, saving in path: {ut.get_save_path()}")
-# -
 
+# %% [markdown]
 # ### Load dataset
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
 digits = datasets.load_digits()
-X = digits.data / 255
+X = digits.data / 16.0
 y = digits.target
-images = X.reshape(X.shape[0], 8, 8)
-ut.plot_train_images(images, "digits dataset images", n=10)
-# -
+print(X.min(), X.max())
+X.shape, y.shape
 
+# %%
+images = X.reshape(X.shape[0], 8, 8)
+ut.set_fig_prefix("train")
+ut.plot_train_images(images, "digits dataset images", n=10)
+
+# %% [markdown]
 # ### Fit standard sklearn PCA
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
 n_components = 8
 fig, axs = plt.subplots(1, 1, sharex=True, sharey=True, layout="constrained")
 pca = ut.get_pca(X, ax=axs, title="PCA on the digits dataset", n_components=n_components)
 plt.show()
 Xpca = pca.transform(X)
-# -
 
+# %% [markdown]
 # ### Fit POLCANet
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
+from polcanet.aencoders import DenseDecoder, DenseEncoder, LinearDecoder
+
 ae_input = X
 act_fn = torch.nn.SiLU
 input_dim = (ae_input.shape[1],)
@@ -107,7 +97,7 @@ latent_dim = pca.n_components
 encoder = DenseEncoder(
     input_dim=input_dim,
     latent_dim=latent_dim,
-    num_layers=3,
+    num_layers=1,
     act_fn=act_fn,
     first_layer_size=256,
     # hidden_size=512,
@@ -146,53 +136,49 @@ summary = torchinfo.summary(
 ut.save_text(str(model), "model.txt")
 ut.save_text(str(summary), "model_summary.txt")
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
 model.to("cuda")
-model.train_model(data=X, batch_size=512, num_epochs=10000, report_freq=10, lr=1e-3)
+model.train_model(data=X, batch_size=256, num_epochs=10000, report_freq=20, lr=1e-3)
 
-# + jupyter={"outputs_hidden": false}
-model.train_model(data=X, batch_size=512, num_epochs=5000, report_freq=10, lr=1e-4)
+# %%
+model.train_model(data=X, batch_size=256, num_epochs=5000, report_freq=20, lr=1e-4)
 
-# + jupyter={"outputs_hidden": false}
-model.train_model(data=X, batch_size=512, num_epochs=5000, report_freq=10, lr=1e-5)
+# %%
+model.train_model(data=X, batch_size=256, num_epochs=5000, report_freq=20, lr=1e-5)
 
-# + [markdown] editable=true slideshow={"slide_type": ""}
+# %% [markdown]
 # ## Evaluate results
-# -
 
+# %%
 report.analyze_reconstruction_error(model, X)
 
+# %%
 latents, reconstructed = model.predict(X)
 
-# +
+# %%
+N = 32
 # Assuming images are properly defined as before
-N = 24
 images_to_show = images[:N]
-# Reconstruct and visualise the images using the autoencoder
-_, ae_reconstructed = model.predict(X[:N])
-ae_reconstructed = ae_reconstructed.reshape(images_to_show.shape)
-# Reconstruct and visualize the imagaes by PCA
-pca_latents = pca.transform(X[:N])
-pca_reconstructed = pca.inverse_transform(pca_latents)
-pca_reconstructed = pca_reconstructed.reshape(images_to_show.shape)
+ut.visualise_reconstructed_images([images_to_show], ["Original"], cmap="gray", nrow=8)
+for i in range(2, 9, 2):
+    print("n_components:", i)
+    ut.plot_reconstruction_comparison(
+        model, pca, images_to_show, cmap="gray", nrow=8, n_components=i, no_title=True, show_only_reconstruction=True
+    )
 
-ut.visualise_reconstructed_images(
-    [images_to_show, ae_reconstructed, pca_reconstructed],
-    title_list=["Original", "POLCA-Net reconstruction", "PCA reconstruction"],
-    cmap="gray",
-    nrow=6,
-)
-# -
-
+# %%
 report.orthogonality_test_analysis(model, X)
 
+# %%
 report.variance_test_analysis(model, X)
 
+# %%
 report.linearity_tests_analysis(model, X)
 
+# %% [markdown]
 # ## Polca Net vs. PCA
 
-# +
+# %%
 o1 = widgets.Output()
 o2 = widgets.Output()
 with o1:
@@ -204,13 +190,13 @@ layout = widgets.Layout(grid_template_columns="repeat(2, 600px)")
 accordion = widgets.GridBox(children=[o1, o2], layout=layout)
 display(accordion)
 
-# + [markdown] editable=true slideshow={"slide_type": ""}
+# %% [markdown]
 # ## Test Classification with two components on PCA vs POLCA Net
 
-# + editable=true slideshow={"slide_type": ""}
-_ = ut.make_classification_report(model, pca, X, y)
+# %%
+_ = ut.make_classification_report(model, pca, X, y, n_components=pca.n_components)
 
-# + editable=true slideshow={"slide_type": ""}
+# %%
 experiment_data = {
     "digits": (
         images,
@@ -219,6 +205,5 @@ experiment_data = {
     ),
 }
 _ = ut.image_metrics_table(experiment_data)
-# -
 
-
+# %%

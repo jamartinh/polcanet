@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 
@@ -11,9 +12,19 @@ class PolcaNetLoss(nn.Module):
     """
     PolcaNetLoss is a class that extends PyTorch's Module class. It represents the loss function used for
     Principal Latent Components Analysis (Polca).
+
+    Attributes:
+        alpha (float): The weight for the orthogonality loss.
+        beta (float): The weight for the center of mass loss.
+        gamma (float): The weight for the low variance loss.
+        class_labels (list): The list of class labels.
+        a (torch.Tensor): The normalized axis.
+        loss_names (dict): The dictionary of loss names.
+
+
     """
 
-    def __init__(self, latent_dim, alpha=1.0, beta=1.0, gamma=1.0, decay_rate=0.5):
+    def __init__(self, latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
@@ -21,21 +32,21 @@ class PolcaNetLoss(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.class_labels = class_labels
 
         pos = (torch.arange(latent_dim, dtype=torch.float32) ** 2) / latent_dim
         self.register_buffer('a', pos)  # normalized axis
-
-        # target_decay = torch.exp(-decay_rate * torch.arange(latent_dim, dtype=torch.float32))
-        # self.register_buffer('t', F.normalize(target_decay, p=1.0, dim=0))  # normalized target decay
 
         self.loss_names = {"loss": "Total Loss",
                            "rec": "Reconstruction Loss",
                            "ort": "Orthogonality Loss",
                            "com": "Center of Mass Loss",
-                           "var": "Variance Distribution Loss",
+                           "var": "Variance Reduction Loss",
                            }
+        if class_labels is not None:
+            self.loss_names["class"] = "Classification Loss"
 
-    def forward(self, z, r, x):
+    def forward(self, z, r, x, yp=None, target=None):
         """
         Variables:
         z: latent representation
@@ -52,55 +63,65 @@ class PolcaNetLoss(nn.Module):
         L1: reconstruction loss
         L2: orthogonality loss
         L3: center of mass loss
-        L4: exponential decay variance loss
+        L4: variance reduction loss
         L: total combined loss
         """
 
+        device = x.device
         # Reconstruction loss
         # Purpose: Ensure the model can accurately reconstruct the input data
         # Method: Mean Squared Error between input and reconstruction
         L_rec = F.mse_loss(r, x)
+        L_ort = self.orthogonality_loss(z)
+        L_com, v, w = self.center_of_mass_loss(z)
+        L_var = v.mean() if self.gamma != 0 else 0
+        L_class = self.classification_loss(yp, target)
 
-        # Orthogonality loss
-        # Purpose: Encourage latent dimensions to be uncorrelated
-        # Method: Penalize off-diagonal elements of the cosine similarity matrix
-        device = z.device
-        L_ort = self.orthogonality_loss(z)  # + self.orthogonality_loss_pythagoras(z)
-        # L_ort = self.orthogonality_loss_pythagoras(z)
+        # Combine losses
+        # Purpose: Balance all loss components for optimal latent representation
+        # Method: Weighted sum of individual losses
+        L = L_rec + L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var
 
+        if self.class_labels is not None:
+            return L, (L_rec, L_ort, L_com, L_var, L_class)
+
+        return L, (L_rec, L_ort, L_com, L_var)
+
+    def center_of_mass_loss(self, z):
+        """
+        Center of mass loss
+        Purpose: Concentrate information in earlier latent dimensions
+        Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
+        """
         # Compute and normalize variance and energy
+        device = z.device
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
         e = torch.mean(z ** 2, dim=0)
         e = F.normalize(e, p=1.0, dim=0)
 
-        # Center of mass loss
-        # Purpose: Concentrate information in earlier latent dimensions
-        # Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
         if self.beta != 0:
-            # L_com = torch.mean(z ** 2 * self.a, dim=0).mean() + torch.mean(v * self.a)
             L_com = torch.mean((w + e) * self.a, dim=0)
         else:
-            L_com = torch.tensor([0], dtype=torch.float32, device=device)
+            L_com = 0  # torch.tensor([0], dtype=torch.float32, device=device)
+        return L_com, v, w
 
-        # Exponential decay variance loss
-        # Purpose: Encourage an exponential decay of variances across latent dimensions
-        # Method: Minimize the difference between normalized variances and a target exponential decay
-        if self.gamma != 0:
-            L_var = F.mse_loss(w, self.t)
+    def classification_loss(self, yp, target):
+        # If class labels are provided, compute classification loss
+        if self.class_labels is not None:
+            L_class = F.cross_entropy(yp, target)
         else:
-            L_var = torch.tensor([0], dtype=torch.float32, device=device)
-
-        # Combine losses
-        # Purpose: Balance all loss components for optimal latent representation
-        # Method: Weighted sum of individual losses
-        L = L_rec + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + v.mean()
-
-        return L, (L_rec, L_ort, L_com, L_var)
+            # device = yp.device
+            L_class = 0  # torch.tensor([0], dtype=torch.float32, device=device)
+        return L_class
 
     def orthogonality_loss(self, z):
+        """ Orthogonality loss
+        Purpose: Encourage latent dimensions to be uncorrelated
+        Method: Penalize off-diagonal elements of the cosine similarity matrix
+        """
         if self.alpha == 0:
-            return torch.tensor([0], dtype=torch.float32, device=z.device)
+            return 0
 
         Z = F.normalize(z, p=2, dim=0)
         S = torch.mm(Z.t(), Z)
@@ -108,6 +129,23 @@ class PolcaNetLoss(nn.Module):
         S_triu = S[idx0, idx1]
         loss = torch.mean(S_triu.square())
         return loss
+
+    @staticmethod
+    def random_projection(z, output_dim=None):
+        batch_dim, n_features = z.shape
+        if output_dim is None:
+            output_dim = n_features
+
+        # Step 1: Generate a random projection matrix
+        random_matrix = torch.randn(n_features, output_dim, device=z.device)
+
+        # Step 2: Project the data
+        z_proj = torch.matmul(z, random_matrix)
+
+        # # Step 3: Optionally normalize the rows to make them unit vectors
+        # z_proj = F.normalize(z_proj, p=2, dim=1)
+
+        return z_proj
 
     def orthogonality_loss_pythagoras(self, z):
         """
@@ -181,29 +219,40 @@ class PolcaNet(nn.Module):
         beta (float): The weight for the center of mass loss.
         gamma (float): The weight for the low variance loss.
         device (str): The device to run the encoder on ("cpu" or "cuda").
-        encoder (aencoders.BaseAutoEncoder): The base autoencoder encoder.
+        encoder (nn.Module): The encoder module.
+        decoder (nn.Module): The decoder module.
+        latent_dim (int): The number of latent dimensions.
+        class_labels (list): The list of class labels.
+
 
     Methods:
-        forward(x): Encodes the input, adds the mean to the latent space, and decodes the result.
-        compute_cross_correlation_loss(latent): Computes the cross-correlation loss.
-        compute_center_of_mass_loss(latent): Computes the center of mass loss.
-        low_variance_loss(latent): Minimizes the variance in the batch.
+        forward(x): Encodes the input and decodes the result.
         predict(in_x, w): Encodes and decodes the input.
         encode(in_x): Encodes the input and adds the mean to the latent space.
         decode(z, w): Decodes the latent space.
-        update_metrics(in_x): Updates the metrics based on the input.
-        inv_score(x, idx): Scores the energy of a given x and y.
         r_error(in_x, w): Computes the reconstruction error.
-        score(in_x, w): Computes the reconstruction score.
         to_device(device): Moves the encoder to the given device.
-        train_model(data, batch_size, num_epochs, report_freq, lr): Trains the encoder.
-        fitter(data, batch_size, num_epochs, lr): Fits the encoder to the data.
-        learn_on_batch(x, optimizer): Performs a learning step on a batch.
-        compute_losses(z, r, x): Computes the losses.
+        to(device): Moves the encoder to the given device.
+        train_model(data, batch_size, num_epochs, report_freq, lr): Trains the model.
+        fitter_data_loader(data_loader, num_epochs, lr): Fits the model using a DataLoader.
+        fitter_in_memory(data, y, batch_size, num_epochs, lr): Fits the model using in-memory data.
+        learn_step(x, optimizer, y): Performs a training step.
+
+
+    Usage:
+        data = np.random.rand(100, 784)
+        latent_dim = 32
+        model = PolcaNet(encoder, decoder, latent_dim=latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None)
+        model.to_device("cuda")
+        model.train_model(data, batch_size=256, num_epochs=10000, report_freq=20, lr=1e-3)
+        model.r_error(data)
+        latents, reconstructed = model.predict(data)
+
+
     """
 
-    def __init__(self, encoder, decoder, latent_dim, alpha=1.0, beta=1.0, gamma=0, device="cpu", center=True,
-                 factor_scale=False):
+    def __init__(self, encoder: nn.Module, decoder: nn.Module, latent_dim: int, alpha=1, beta=1, gamma=1,
+                 class_labels=None):
         """
         Initialize PolcaNet with the provided parameters.
         """
@@ -213,9 +262,10 @@ class PolcaNet(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        self.device = torch.device(device)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.class_labels = class_labels
 
-        self.encoder = EncoderWrapper(encoder, factor_scale) if center or factor_scale else encoder
+        self.encoder = EncoderWrapper(encoder, latent_dim=latent_dim, class_labels=class_labels)
         self.decoder = decoder
 
         if hasattr(self.encoder, "decoder"):
@@ -228,17 +278,22 @@ class PolcaNet(nn.Module):
             self.decoder.encoder = None
             del self.decoder.encoder
 
-        self.polcanet_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma)
+        self.polca_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma, class_labels=class_labels)
 
     def forward(self, x):
-        latent = self.encoder(x)
-        reconstruction = self.decoder(latent)
-        return latent, reconstruction
+        z = self.encoder(x)
+        if self.class_labels is not None:
+            r = self.decoder(z[0])
+            return (z[0], z[1]), r
+        else:
+            r = self.decoder(z)
+        return z, r
 
     def predict(self, in_x, mask=None, n_components=None):
         z = self.encode(in_x)
         if n_components:
             z = z[:, :n_components]
+
         r = self.decode(z, mask=mask)
         return z, r
 
@@ -251,6 +306,8 @@ class PolcaNet(nn.Module):
 
         with torch.no_grad():
             z = self.encoder(x)
+            if self.class_labels is not None:
+                return z[0].cpu().numpy()
 
         return z.cpu().numpy()
 
@@ -297,17 +354,23 @@ class PolcaNet(nn.Module):
         super().to(device)
         return self
 
-    def train_model(self, data, batch_size=None, num_epochs=100, report_freq=10, lr=1e-3, verbose=1):
+    def train_model(self, data, y=None, batch_size=None, num_epochs=100, report_freq=10, lr=1e-3, verbose=1):
+        # Input validation helpers
+        # if class labels exist, assure that y is provided
+        if self.class_labels is not None and y is None:
+            raise ValueError("Class labels are provided, but no target values are provided in train_model")
+
         if isinstance(data, (np.ndarray, torch.Tensor)):
             if batch_size is None:
                 raise ValueError("batch_size must be provided when data is in memory")
-            fitter = self.fitter_in_memory(data, batch_size=batch_size, num_epochs=num_epochs, lr=lr)
-        elif isinstance(data, torch.utils.data.DataLoader):
+            fitter = self.fitter_in_memory(data, y=y, batch_size=batch_size, num_epochs=num_epochs, lr=lr)
+        elif isinstance(data, DataLoader):
             fitter = self.fitter_data_loader(data, num_epochs=num_epochs, lr=lr)
         else:
             fitter = None
 
-        assert fitter is not None, "Data loader must be either a DataLoader or a numpy array or torch tensor"
+        assert fitter is not None, "Data must be either a DataLoader or a numpy array or torch tensor"
+
         epoch_progress = tqdm(fitter, desc="epoch", leave=True, total=num_epochs, miniters=report_freq,
                               disable=bool(not verbose))
         metrics = {}
@@ -320,7 +383,7 @@ class PolcaNet(nn.Module):
         if bool(verbose):
             print(f"Final metrics at epoch: {epoch + 1}")
             for k, v in metrics.items():
-                print(f"{self.polcanet_loss.loss_names[k]}: {v:.4g}")
+                print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
 
         return metrics["loss"]
 
@@ -332,23 +395,43 @@ class PolcaNet(nn.Module):
         for epoch in range(num_epochs):
             losses = defaultdict(list)
             for batch in data_loader:
-                x = batch
-                x = x.to(self.device)
-                loss, aux_losses = self.learn_step(x, optimizer=optimizer)
+                if self.class_labels is not None:
+                    x = batch[0].to(self.device)
+                    y = batch[1].to(self.device)
+                    # assure that the target is an integer tensor of 32 bits
+                    y = y.to(torch.int64)
+                else:
+                    # sometimes even if no targets in data loader the batch is a tuple
+                    if isinstance(batch, tuple):
+                        x = batch[0].to(self.device)
+                    else:
+                        x = batch.to(self.device)
+                    y = None
+
+                loss, aux_losses = self.learn_step(x, optimizer=optimizer, y=y)
                 losses["loss"].append(loss.item())
-                for idx, name in enumerate(list(self.polcanet_loss.loss_names)[1:]):
+                for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[idx].item())
 
             metrics = {name: np.mean(losses[name]) for name in losses}
             yield epoch, metrics
 
-    def fitter_in_memory(self, data: np.ndarray | torch.Tensor, batch_size=512, num_epochs=100, lr=1e-3):
+    def fitter_in_memory(self, data: np.ndarray | torch.Tensor, y=None, batch_size=512, num_epochs=100, lr=1e-3):
         num_samples: int = len(data)
         self.train()
+        torch_y = None
+
+        if self.class_labels is None:
+            y = None
+
         if not isinstance(data, torch.Tensor):
             torch_data = torch.tensor(data, dtype=torch.float32).to(self.device)
+            if self.class_labels is not None:
+                torch_y = torch.tensor(y, dtype=torch.int64).to(self.device)
         else:
             torch_data = data.to(self.device)
+            if self.class_labels is not None:
+                torch_y = y.to(self.device)
 
         # Create the optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
@@ -359,18 +442,25 @@ class PolcaNet(nn.Module):
             for i in range(0, num_samples, batch_size):
                 batch_indices = indices[i:i + batch_size]
                 x = torch_data[batch_indices]
-                loss, aux_losses = self.learn_step(x, optimizer)
+                if self.class_labels is not None:
+                    targets = torch_y[batch_indices]
+                else:
+                    targets = None
 
+                loss, aux_losses = self.learn_step(x, optimizer, y=targets)
                 losses["loss"].append(loss.item())
-                for aux_loss, name in enumerate(list(self.polcanet_loss.loss_names)[1:]):
+                for aux_loss, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[aux_loss].item())
 
             metrics = {name: np.mean(losses[name]) for name in losses}
             yield epoch, metrics
 
-    def learn_step(self, x, optimizer):
+    def learn_step(self, x, optimizer, y=None):
         z, r = self.forward(x)
-        loss, aux_losses = self.polcanet_loss(z, r, x)
+        yp = z[1] if self.class_labels is not None else None
+        z = z[0] if self.class_labels is not None else z
+
+        loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -385,36 +475,24 @@ class EncoderWrapper(nn.Module):
     the magnitudes as a tuple.
     """
 
-    def __init__(self, encoder, factor_scale=False):
+    def __init__(self, encoder: nn.Module, latent_dim, class_labels=None):
         """
         Initializes the encoder wrapper with the encoder module and the factor scale parameter.
         :param encoder: The encoder module.
-        :param factor_scale: Whether to factor the scale of the latent vectors.
         """
         super().__init__()
-        self.factor_scale = factor_scale
-        if not factor_scale:
-            self.encoder = nn.Sequential(encoder, nn.Softsign())
-        else:
-            self.encoder = encoder
+        self.class_labels = class_labels
+        self.latent_dim = latent_dim
+        self.encoder = encoder
+        self.post_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim, bias=False), nn.Softsign())
+        if class_labels is not None:
+            # create a simple perceptron layer
+            self.classifier = nn.Linear(latent_dim, len(class_labels))
 
     def forward(self, x):
         z = self.encoder(x)
-        if self.factor_scale:
-            # detect if model is in train
-            # if self.training:
-            #     # Calculate the target increase with initial exponential function
-            #     target_increase = torch.exp(-1.0 * torch.arange(z.shape[1] - 1, -1, -1, dtype=torch.float32,device=z.device))
-            #     # Normalize the curve to start from 0
-            #     target_increase = target_increase - target_increase.min()
-            #     # Optionally, scale the curve to have a maximum of 1
-            #     target_increase = target_increase / target_increase.max()
-            #
-            #     # inject uniform noise to z following pos distribution taking into z now has range of [-1,1]
-            #     z = z + z.mean(dim=0)*(2*torch.rand_like(z)-0.5) * target_increase
-
-            z = torch.nn.functional.tanh(z)
-
-            return z
+        z = self.post_encoder(z)
+        if self.class_labels is not None:
+            return z, self.classifier(z)
 
         return z
