@@ -42,41 +42,23 @@
 # ## Imports and Initialization
 
 # %%
-import polcanet.utils
 # %load_ext autoreload
 # %autoreload 2
 
 # %%
-
 import matplotlib.pyplot as plt
-
-plt.style.use(['science','no-latex'])
-
-# Query the current default figure size
-current_fig_size = plt.rcParams["figure.figsize"]
-print(f"Current default figure size: {current_fig_size}")
-
-# Define a scalar factor
-scalar_factor = 1.5
-
-# Multiply the current figure size by the scalar factor
-new_fig_size = [size * scalar_factor for size in current_fig_size]
-
-# Set the new default figure size
-plt.rcParams["figure.figsize"] = new_fig_size
-
-print(f"New default figure size: {new_fig_size}")
 import numpy as np
 import torch
 import torchinfo
 
 # %%
-from polcanet import  PolcaNet
 import polcanet.reports as report
 import polcanet.utils as ut
+from polcanet import PolcaNet
 
 # %%
 import random
+
 random_seed = 5
 np.random.seed(random_seed)
 torch.manual_seed(random_seed)
@@ -111,32 +93,32 @@ data_sin_test = ut.generate_2d_sinusoidal_data(N, M, num_samples=num_samples)
 # Generate 2D real bent function images data
 data_bent = ut.generate_bent_images(N, M, num_samples=3000)
 data_bent_test = ut.generate_bent_images(N, M, num_samples=num_samples)
-print(data_sin.min(),data_sin.max())
-print(data_bent.min(),data_bent.max())
+print(data_sin.min(), data_sin.max())
+print(data_bent.min(), data_bent.max())
 ut.set_fig_prefix("sin_train")
-ut.plot_train_images(data_sin, "Sinusoidal images",cmap="viridis", n=5)
+ut.plot_train_images(data_sin, "Sinusoidal images", cmap="viridis", n=5)
 ut.set_fig_prefix("bent_train")
-ut.plot_train_images(data_bent, "Bent images",cmap="viridis", n=5)
+ut.plot_train_images(data_bent, "Bent images", cmap="viridis", n=5)
 
 ut.set_fig_prefix("sin_test")
-ut.plot_train_images(data_sin_test, "Sinusoidal test images",cmap="viridis", n=5)
+ut.plot_train_images(data_sin_test, "Sinusoidal test images", cmap="viridis", n=5)
 ut.set_fig_prefix("bent_test")
-ut.plot_train_images(data_bent_test, "Bent test images",cmap="viridis", n=5)
+ut.plot_train_images(data_bent_test, "Bent test images", cmap="viridis", n=5)
 
 # %% [markdown]
 # ### Perform PCA on datasets
 
 # %%
-n_components = 8 #int((N*M)//100)
+n_components = 8  # int((N*M)//100)
 ut.set_fig_prefix("sin")
-fig, axs = plt.subplots(1,1,sharex=True, sharey=True,layout='constrained')
-pca_sin = ut.get_pca(data_sin,ax=axs,title="PCA on Sinusoidal images",n_components=n_components)
+fig, axs = plt.subplots(1, 1, sharex=True, sharey=True, layout="constrained")
+pca_sin = ut.get_pca(data_sin, ax=axs, title="PCA on Sinusoidal images", n_components=n_components)
 plt.show()
 
-n_components =  int((N*M)/40)
+n_components = int((N * M) / 40)
 ut.set_fig_prefix("bent")
-fig, axs = plt.subplots(1,1,sharex=True, sharey=True,layout='constrained')
-pca_bent = ut.get_pca(data_bent,ax=axs,title="PCA on Bent images",n_components=n_components)
+fig, axs = plt.subplots(1, 1, sharex=True, sharey=True, layout="constrained")
+pca_bent = ut.get_pca(data_bent, ax=axs, title="PCA on Bent images", n_components=n_components)
 plt.show()
 
 # %% [markdown]
@@ -169,10 +151,10 @@ encoder_sin = ConvEncoder(
 decoder_sin = LinearDecoder(
     latent_dim=latent_dim,
     input_dim=input_dim,
-    hidden_dim=5*256,
+    hidden_dim=5 * 256,
     num_layers=5,
     act_fn=act_fn,
-    bias = False,
+    bias=False,
 )
 
 model_sin = PolcaNet(
@@ -181,15 +163,14 @@ model_sin = PolcaNet(
     latent_dim=latent_dim,
     alpha=1.0,  # ortgogonality loss
     beta=1.0,  # variance sorting loss
-    gamma=1.0,  # variance reduction loss   
-   
+    gamma=1.0,  # variance reduction loss
 )
 print(model_sin)
 summary = torchinfo.summary(
     model_sin,
     (1, *input_dim),
     dtypes=[torch.float],
-    verbose=1,    
+    verbose=1,
     col_width=16,
     col_names=["kernel_size", "output_size", "num_params"],
     row_settings=["var_names"],
@@ -220,10 +201,10 @@ data_sin.shape, reconstructed.shape, latents.shape
 # %%
 ut.set_fig_prefix("sin_train")
 images = data_sin[0:25]
-ut.plot_reconstruction_comparison(model_sin,pca_sin,images,cmap="viridis",nrow=5)
+ut.plot_reconstruction_comparison(model_sin, pca_sin, images, cmap="viridis", nrow=5)
 ut.set_fig_prefix("sin_test")
 images = data_sin_test[0:25]
-ut.plot_reconstruction_comparison(model_sin,pca_sin,images,cmap="viridis",nrow=5)
+ut.plot_reconstruction_comparison(model_sin, pca_sin, images, cmap="viridis", nrow=5)
 
 # %%
 ut.set_fig_prefix("sin_train")
@@ -239,9 +220,9 @@ report.variance_test_analysis(model_sin, data_sin_test)
 
 # %%
 ut.set_fig_prefix("sin_train")
-report.linearity_tests_analysis(model_sin, data_sin,alpha_min=0,num_samples=200)
+report.linearity_tests_analysis(model_sin, data_sin, alpha_min=0, num_samples=200)
 ut.set_fig_prefix("sin_test")
-report.linearity_tests_analysis(model_sin, data_sin_test,alpha_min=0,num_samples=200)
+report.linearity_tests_analysis(model_sin, data_sin_test, alpha_min=0, num_samples=200)
 
 # %% [markdown]
 # ### Train on Bent Images
@@ -270,7 +251,7 @@ decoder_bent = LinearDecoder(
     hidden_dim=5 * 256,
     num_layers=5,
     act_fn=act_fn,
-    bias= True
+    bias=False,
 )
 
 model_bent = PolcaNet(
@@ -279,15 +260,14 @@ model_bent = PolcaNet(
     latent_dim=latent_dim,
     alpha=1.0,  # ortgogonality loss
     beta=1.0,  # variance sorting loss
-    gamma=1.0,  # variance reduction loss  
-  
+    gamma=1.0,  # variance reduction loss
 )
 print(model_bent)
 summary = torchinfo.summary(
     model_bent,
     (1, *input_dim),
     dtypes=[torch.float],
-    verbose=1,    
+    verbose=1,
     col_width=16,
     col_names=["kernel_size", "output_size", "num_params"],
     row_settings=["var_names"],
@@ -318,10 +298,10 @@ data_bent.shape, reconstructed.shape, latents.shape
 # %%
 ut.set_fig_prefix("sin_train")
 images = data_bent[0:25]
-ut.plot_reconstruction_comparison(model_bent,pca_bent,images,cmap="viridis",nrow=5)
+ut.plot_reconstruction_comparison(model_bent, pca_bent, images, cmap="viridis", nrow=5)
 ut.set_fig_prefix("sin_test")
 images = data_bent_test[0:25]
-ut.plot_reconstruction_comparison(model_bent,pca_bent,images,cmap="viridis",nrow=5)
+ut.plot_reconstruction_comparison(model_bent, pca_bent, images, cmap="viridis", nrow=5)
 
 # %%
 ut.set_fig_prefix("bent_train")
@@ -337,9 +317,9 @@ report.variance_test_analysis(model_bent, data_bent_test)
 
 # %%
 ut.set_fig_prefix("bent_train")
-report.linearity_tests_analysis(model_bent, data_bent,alpha_min=0,num_samples=200)
+report.linearity_tests_analysis(model_bent, data_bent, alpha_min=0, num_samples=200)
 ut.set_fig_prefix("bent_test")
-report.linearity_tests_analysis(model_bent, data_bent_test,alpha_min=0,num_samples=200)
+report.linearity_tests_analysis(model_bent, data_bent_test, alpha_min=0, num_samples=200)
 
 # %% [markdown]
 # ## Test Overall

@@ -94,7 +94,6 @@ class PolcaNetLoss(nn.Module):
         Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
         """
         # Compute and normalize variance and energy
-        device = z.device
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
         e = torch.mean(z ** 2, dim=0)
@@ -111,8 +110,7 @@ class PolcaNetLoss(nn.Module):
         if self.class_labels is not None:
             L_class = F.cross_entropy(yp, target)
         else:
-            # device = yp.device
-            L_class = 0  # torch.tensor([0], dtype=torch.float32, device=device)
+            L_class = 0
         return L_class
 
     def orthogonality_loss(self, z):
@@ -127,7 +125,30 @@ class PolcaNetLoss(nn.Module):
         S = torch.mm(Z.t(), Z)
         idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
         S_triu = S[idx0, idx1]
-        loss = torch.mean(S_triu.square())
+        cos_sim = S_triu.square()
+        loss = torch.mean(cos_sim)
+
+        return loss
+
+    def orthogonality_loss_kernel_tricked(self, z):
+        if self.alpha == 0:
+            return 0
+        # Normalize the latent space (L2 normalization across the batch dimension)
+        Z = F.normalize(z, p=2, dim=0)
+
+        # Compute pairwise squared Euclidean distances
+        pairwise_dists = torch.cdist(Z.t(), Z.t(), p=2).pow(2)
+
+        # Apply the Gaussian RBF kernel
+        sigma_squared = torch.median(pairwise_dists)  # Heuristic for sigma^2
+        K = torch.exp(-pairwise_dists / (2 * sigma_squared))
+
+        # Extract the upper triangular part of the kernel matrix (excluding diagonal)
+        idx0, idx1 = torch.triu_indices(K.shape[0], K.shape[1], offset=1)
+        K_triu = K[idx0, idx1]
+
+        # Compute the loss as the mean of the off-diagonal kernel values
+        loss = torch.mean(K_triu)
         return loss
 
     @staticmethod
@@ -355,8 +376,22 @@ class PolcaNet(nn.Module):
         return self
 
     def train_model(self, data, y=None, batch_size=None, num_epochs=100, report_freq=10, lr=1e-3, verbose=1):
-        # Input validation helpers
-        # if class labels exist, assure that y is provided
+        """
+        Train the model using the given data.
+        Usage:
+            In memory numpy or torch tensor inputs:
+            >>> data = np.random.rand(100, 784)
+            >>> latent_dim = 32
+            >>> model = PolcaNet(encoder, decoder, latent_dim=latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None
+            >>> model.to_device("cuda")
+            >>> model.train_model(data, batch_size=256, num_epochs=10000, report_freq=20, lr=1e-3)
+
+            Or using a data loader:
+            >>> data_loader = DataLoader(data, batch_size=256, shuffle=True)
+            >>> model.train_model(data_loader, num_epochs=10000, report_freq=20, lr=1e-3)
+
+        """
+
         if self.class_labels is not None and y is None:
             raise ValueError("Class labels are provided, but no target values are provided in train_model")
 
@@ -459,7 +494,6 @@ class PolcaNet(nn.Module):
         z, r = self.forward(x)
         yp = z[1] if self.class_labels is not None else None
         z = z[0] if self.class_labels is not None else z
-
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
         optimizer.zero_grad()
         loss.backward()

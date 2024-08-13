@@ -11,6 +11,7 @@ import scienceplots
 import torch
 import torch.nn as nn
 from IPython.display import display
+from PIL import Image
 from matplotlib import pyplot as plt
 from scipy.stats import wilcoxon
 from skimage import exposure
@@ -108,6 +109,11 @@ def save_text(text, name):
             f.write(text)
 
 
+def save_df_to_csv(df, name):
+    if get_save_fig():
+        df.to_csv(get_save_path() / Path(name), index=False)
+
+
 def normalize_array(array, value_range=None, scale_each=False):
     def norm_ip(arr, low, high):
         arr = np.clip(arr, low, high)  # Equivalent to clamp_
@@ -186,11 +192,12 @@ def make_grid(images, nrow=8, padding=2, pad_value=0, normalize=True):
 # Function to show a single image
 def show_image(ax, img, cmap=None):
     cmap = cmap or "viridis"
-    # if the images has channels last we should convert it to channels first
-    # check if image is not int the range should be float32 [0,1] so we have to scale it
+    # if the images has channels first we should convert it to channels last
+    # check if image is not in the range should be float32 [0,1] so we have to scale it
 
     if img.ndim == 3 and img.shape[0] in {1, 3}:
         img = np.transpose(img, (1, 2, 0))  # Convert (C, H, W) to (H, W, C)
+        cmap = None  # Do not use cmap for RGB images
 
     if img.dtype != np.uint8:
         img = exposure.rescale_intensity(img, in_range='image', out_range=(0, 1))
@@ -405,6 +412,7 @@ def image_metrics_table(experiment_data: dict, n_components=None):
     df_table = pd.concat(tables).set_index("Method")
     display(df_table)
     save_latex_table(df_table, "image_metrics.tex")
+    save_df_to_csv(df_table, "image_metrics.csv")
     return df_table
 
 
@@ -463,7 +471,7 @@ def make_classification_report(model, pca, X, y, n_components=None):
         results.append({"Classifier": name,
                         "Transformation": "PCA",
                         "Accuracy": accuracy_pca,
-                        "Error rate": (1 - accuracy_pca)*100,
+                        "Error rate": (1 - accuracy_pca) * 100,
                         # "Precision": report_pca["weighted avg"]["precision"],
                         # "Recall": report_pca["weighted avg"]["recall"],
                         "Matthews": matthews_correlation_pca,
@@ -474,7 +482,7 @@ def make_classification_report(model, pca, X, y, n_components=None):
         results.append({"Classifier": name,
                         "Transformation": "POLCA",
                         "Accuracy": accuracy_polca,
-                        "Error rate": (1 - accuracy_polca)*100,
+                        "Error rate": (1 - accuracy_polca) * 100,
                         # "Precision": report_polca["weighted avg"]["precision"],
                         # "Recall": report_polca["weighted avg"]["recall"],
                         "Matthews": matthews_correlation_polca,
@@ -541,6 +549,7 @@ def make_classification_report(model, pca, X, y, n_components=None):
     print("Performance Metrics DataFrame:")
     display(df_metrics)
     save_latex_table(df_metrics, "classification_metrics.tex")
+    save_df_to_csv(df_metrics, "classification_metrics.csv")
 
     print("\nWilcoxon Signed-Rank Test Results DataFrame:")
     display(df_wilcoxon)
@@ -572,8 +581,6 @@ def plot_train_images(x, title="", n=1, cmap="gray", save_fig=None):
 
 
 def plot2d_analysis(X, y, title, legend=False):
-
-
     fig = plt.figure(1)
     ax = fig.add_subplot(111)
     scatter = ax.scatter(X[:, 0], X[:, 1], label=y, cmap="tab10", c=y, s=10, rasterized=True, alpha=0.75)
@@ -828,3 +835,35 @@ def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
         images[i] = bent_function_image(N, M, a, b, c, d)
 
     return images
+
+
+def convert_to_rgb_and_reshape(image_array):
+    """
+    Convert an array of images to RGB format and reshape it to (image_index, channels, W, H).
+
+    Args:
+    - image_array (numpy.ndarray): Array of images with shape (image_index, W, H, channels)
+
+    Returns:
+    - numpy.ndarray: Array of images converted to RGB format with shape (image_index, channels, W, H)
+    """
+    processed_images = []
+
+    for img in image_array:
+        # Convert numpy array to PIL Image
+        pil_img = Image.fromarray(img)
+
+        # Convert to RGB if not already
+        if pil_img.mode != 'RGB':
+            pil_img = pil_img.convert('RGB')
+
+        # Convert back to numpy array and change shape to (channels, W, H)
+        rgb_array = np.array(pil_img).transpose(2, 0, 1)
+
+        # Append the processed image to the list
+        processed_images.append(rgb_array)
+
+    # Convert the list of processed images back to a numpy array
+    processed_array = np.array(processed_images)
+
+    return processed_array
