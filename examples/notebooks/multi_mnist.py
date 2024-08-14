@@ -122,7 +122,7 @@ def train_x_mnist(params):
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-4)
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-5)
 
-    # Evaluate loss iteractions
+    # Evaluate loss interactions
     ut.set_fig_prefix("bent_train")
     model.loss_analyzer.print_report()
     model.loss_analyzer.plot_correlation_matrix(figsize=None)
