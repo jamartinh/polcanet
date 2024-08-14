@@ -1,16 +1,17 @@
-from typing import Tuple
+from itertools import combinations
+from typing import List, Dict, Tuple
 
 import cmasher as cmr
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from matplotlib import pyplot as plt
 from scipy.stats import gaussian_kde
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
-
-from polcanet.utils import save_figure
+from IPython.display import display
+from polcanet.utils import save_figure, save_df_to_csv
 
 
 # def plot_reconstruction_mask(model, data,n_components=None, save_fig: str = None):
@@ -612,7 +613,7 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
 
     # Plotting results
-    #fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    # fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
     fig, (ax1, ax2) = plt.subplots(1, 2)
 
     # Additivity plot
@@ -689,3 +690,213 @@ def linearity_tests_analysis(model, data, alpha_min=-1, alpha_max=1, num_samples
     latent_x = torch.tensor(latent_x, dtype=torch.float32, device=model.device)
     latent_y = torch.tensor(latent_y, dtype=torch.float32, device=model.device)
     linearity_test_plot(model.decoder, latent_x, latent_y, alpha_min=alpha_min, alpha_max=alpha_max, save_fig=save_fig)
+
+
+class LossConflictAnalyzer:
+    def __init__(self, model: torch.nn.Module, loss_names: List[str] = None, conflict_threshold: float = 0.1):
+        self.pairwise_similarities = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_interactions = {}
+        self.total_conflicts = 0
+        self.total_interactions = 0
+        self.model = model
+        self.loss_names = loss_names if loss_names else []
+        self.conflict_threshold = conflict_threshold
+        self.reset_statistics()
+
+    def reset_statistics(self):
+        self.total_interactions = 0
+        self.total_conflicts = 0
+        self.pairwise_interactions = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_similarities = {}
+
+    def analyze(self, losses: List[torch.Tensor]) -> None:
+        if len(losses) != len(self.loss_names):
+            raise ValueError("Number of losses must match number of loss names")
+
+        grads = self._compute_grad(losses)
+        self._analyze_conflicts(grads)
+
+    def _compute_grad(self, losses: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
+        grads = []
+        for loss in losses:
+            self.model.zero_grad()
+            loss.backward(retain_graph=True)
+            grad_dict = {name: param.grad.clone() for name, param in self.model.named_parameters() if
+                         param.grad is not None}
+            grads.append(grad_dict)
+        return grads
+
+    def _analyze_conflicts(self, grads: List[Dict[str, torch.Tensor]]) -> None:
+        num_losses = len(grads)
+
+        for (i, j) in combinations(range(num_losses), 2):
+            conflict_key = self._get_conflict_key(i, j)
+            g_i, g_j = grads[i], grads[j]
+
+            similarity = self._compute_similarity(g_i, g_j)
+
+            self.total_interactions += 1
+            self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
+            self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [similarity]
+
+            if similarity < -self.conflict_threshold:
+                self.total_conflicts += 1
+                self.pairwise_conflicts[conflict_key] = self.pairwise_conflicts.get(conflict_key, 0) + 1
+
+    @staticmethod
+    def _compute_similarity(grad1: Dict[str, torch.Tensor], grad2: Dict[str, torch.Tensor]) -> float:
+        dot_product = 0
+        norm1 = 0
+        norm2 = 0
+        for name in grad1.keys():
+            if name in grad2:
+                g1, g2 = grad1[name], grad2[name]
+                dot_product += torch.sum(g1 * g2).item()
+                norm1 += torch.sum(g1 * g1).item()
+                norm2 += torch.sum(g2 * g2).item()
+
+        if norm1 == 0 or norm2 == 0:
+            return 0
+        return dot_product / (np.sqrt(norm1) * np.sqrt(norm2))
+
+    def _get_conflict_key(self, i: int, j: int) -> Tuple[str, str]:
+        return self.loss_names[i], self.loss_names[j]
+
+    def report(self) -> Tuple[Dict[str, float], pd.DataFrame]:
+        overall_conflict_rate = self.total_conflicts / max(1, self.total_interactions)
+
+        report_dict = {
+                'total_interactions': self.total_interactions,
+                'total_conflicts': self.total_conflicts,
+                'overall_conflict_rate': overall_conflict_rate,
+                'pairwise_data': {}
+        }
+
+        df_data = []
+
+        for (loss1, loss2), interactions in self.pairwise_interactions.items():
+            conflicts = self.pairwise_conflicts.get((loss1, loss2), 0)
+            similarities = self.pairwise_similarities[(loss1, loss2)]
+            avg_similarity = np.mean(similarities)
+            conflict_rate = conflicts / interactions if interactions > 0 else 0
+
+            if avg_similarity > self.conflict_threshold:
+                relationship = "Strongly Cooperative"
+            elif avg_similarity > 0:
+                relationship = "Weakly Cooperative"
+            elif avg_similarity > -self.conflict_threshold:
+                relationship = "Weakly Conflicting"
+            else:
+                relationship = "Strongly Conflicting"
+
+            report_dict['pairwise_data'][(loss1, loss2)] = {
+                    'interactions': interactions,
+                    'conflicts': conflicts,
+                    'conflict_rate': conflict_rate,
+                    'avg_similarity': avg_similarity,
+                    'relationship': relationship
+            }
+
+            df_data.append({
+                    'loss1': loss1,
+                    'loss2': loss2,
+                    'interactions': interactions,
+                    'conflicts': conflicts,
+                    'conflict_rate': conflict_rate,
+                    'avg_similarity': avg_similarity,
+                    'relationship': relationship
+            })
+
+        df = pd.DataFrame(df_data)
+        df = df.sort_values('avg_similarity').reset_index(drop=True)
+
+        return report_dict, df
+
+    def print_report(self) -> None:
+        report_dict, df = self.report()
+        print(f"Loss Interaction Analysis Report:")
+        print(f"Total interactions: {report_dict['total_interactions']}")
+        print(f"Total conflicts: {report_dict['total_conflicts']}")
+        print(f"Overall conflict rate: {report_dict['overall_conflict_rate']:.4f}")
+        print(f"\nPairwise Statistics (sorted by similarity):")
+
+        def color_cells(val, column):
+            if column == 'relationship':
+                colors = {
+                        "Strongly Cooperative": "color: green",
+                        "Weakly Cooperative": "color: green",
+                        "Weakly Conflicting": "color: coral",
+                        "Strongly Conflicting": "color: red"
+                }
+                return colors.get(val, "")
+            elif column == 'avg_similarity':
+                if val > self.conflict_threshold:
+                    return 'color: green'
+                elif val > 0:
+                    return 'color: green'
+                elif val > -self.conflict_threshold:
+                    return 'color: coral'
+                else:
+                    return 'color: red'
+            return ''
+
+        styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1) \
+            .format({
+                'interactions': '{:.0f}',
+                'conflicts': '{:.0f}',
+                'conflict_rate': '{:.3f}',
+                'avg_similarity': '{:.3f}'
+        })
+
+        display(styled_df)
+        save_df_to_csv(df, "loss_interaction_report.csv")
+
+    def plot_correlation_matrix(self, figsize=(10, 8)):
+        _, df = self.report()
+
+        # Create a square matrix of similarities
+        matrix_size = len(self.loss_names)
+        sim_matrix = np.ones((matrix_size, matrix_size))
+
+        for _, row in df.iterrows():
+            i = self.loss_names.index(row['loss1'])
+            j = self.loss_names.index(row['loss2'])
+            sim_matrix[i, j] = sim_matrix[j, i] = row['avg_similarity']
+
+        # Create a mask for the upper triangle
+        mask = np.triu(np.ones_like(sim_matrix, dtype=bool))
+
+        # Set up the matplotlib figure
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Create colormap
+        cmap = sns.diverging_palette(10, 220, as_cmap=True)
+
+        # Draw the heatmap with the mask and correct aspect ratio
+        sns.heatmap(sim_matrix, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0,
+                    square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=True,
+                    xticklabels=self.loss_names, yticklabels=self.loss_names)
+
+        # Add relationship annotations
+        for i in range(matrix_size):
+            for j in range(i + 1, matrix_size):
+                if not mask[i, j]:
+                    similarity = sim_matrix[i, j]
+                    if similarity > self.conflict_threshold:
+                        relationship = "SC"  # Strongly Cooperative
+                    elif similarity > 0:
+                        relationship = "WC"  # Weakly Cooperative
+                    elif similarity > -self.conflict_threshold:
+                        relationship = "WF"  # Weakly Conflicting
+                    else:
+                        relationship = "SF"  # Strongly Conflicting
+                    ax.text(j + 0.5, i + 0.5, relationship,
+                            ha='center', va='center', color='black',
+                            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+        plt.title("Loss Interaction Matrix")
+        plt.tight_layout()
+        save_figure("loss_interaction.pdf")
+        plt.show()

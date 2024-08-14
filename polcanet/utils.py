@@ -23,6 +23,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import minmax_scale
 from sklearn.svm import SVC
+import warnings
+from sklearn.exceptions import DataConversionWarning, ConvergenceWarning, UndefinedMetricWarning
+
+# Filter out specific warnings
+warnings.filterwarnings("ignore", category=DataConversionWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+# Suppress NumPy's "RuntimeWarning: Mean of empty slice"
+warnings.filterwarnings("ignore", message="Mean of empty slice")
+# also for Sample size too small for normal approximation.
+warnings.filterwarnings("ignore", message="Sample size too small for normal approximation.")
 
 sp_path = scienceplots.scienceplots_path
 plt.style.use(["science", "no-latex"])
@@ -111,7 +122,7 @@ def save_text(text, name):
 
 def save_df_to_csv(df, name):
     if get_save_fig():
-        df.to_csv(get_save_path() / Path(name), index=False)
+        df.to_csv(get_save_path() / Path(name), index=True)
 
 
 def normalize_array(array, value_range=None, scale_each=False):

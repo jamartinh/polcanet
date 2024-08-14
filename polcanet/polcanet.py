@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from polcanet.reports import LossConflictAnalyzer
+
 
 class PolcaNetLoss(nn.Module):
     """
@@ -34,7 +36,7 @@ class PolcaNetLoss(nn.Module):
         self.gamma = gamma
         self.class_labels = class_labels
 
-        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 2) / latent_dim
+        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
         self.register_buffer('a', pos)  # normalized axis
 
         self.loss_names = {"loss": "Total Loss",
@@ -73,7 +75,7 @@ class PolcaNetLoss(nn.Module):
         # Method: Mean Squared Error between input and reconstruction
         L_rec = F.mse_loss(r, x)
         L_ort = self.orthogonality_loss(z)
-        L_com, v, w = self.center_of_mass_loss(z)
+        L_com, v = self.center_of_mass_loss(z)
         L_var = v.mean() if self.gamma != 0 else 0
         L_class = self.classification_loss(yp, target)
 
@@ -95,22 +97,23 @@ class PolcaNetLoss(nn.Module):
         """
         # Compute and normalize variance and energy
         v = torch.var(z, dim=0)
-        w = F.normalize(v, p=1.0, dim=0)
-        e = torch.mean(z ** 2, dim=0)
-        e = F.normalize(e, p=1.0, dim=0)
+        if self.beta == 0:
+            return 0, v
 
-        if self.beta != 0:
-            L_com = torch.mean((w + e) * self.a, dim=0)
-        else:
-            L_com = 0  # torch.tensor([0], dtype=torch.float32, device=device)
-        return L_com, v, w
+        w = F.normalize(v, p=1.0, dim=0)
+        # e = torch.mean(z ** 2, dim=0)
+        # e = F.normalize(e, p=1.0, dim=0)
+        # L_com = torch.mean((w + e) * self.a, dim=0)
+        L_com = torch.mean(w * self.a, dim=0)
+
+        return L_com, v
 
     def classification_loss(self, yp, target):
         # If class labels are provided, compute classification loss
-        if self.class_labels is not None:
-            L_class = F.cross_entropy(yp, target)
-        else:
-            L_class = 0
+        if self.class_labels is None:
+            return 0
+
+        L_class = F.cross_entropy(yp, target)
         return L_class
 
     def orthogonality_loss(self, z):
@@ -131,6 +134,12 @@ class PolcaNetLoss(nn.Module):
         return loss
 
     def orthogonality_loss_kernel_tricked(self, z):
+        """
+        Orthogonality loss using the Gaussian RBF kernel trick
+        This is an attempt to use the kernel trick idea to compute the orthogonality loss
+        projected into a higher-dimensional space using the Gaussian RBF kernel so that it can capture
+        non-linear relationships between the latent dimensions pursuing thus Functional Independence.
+        """
         if self.alpha == 0:
             return 0
         # Normalize the latent space (L2 normalization across the batch dimension)
@@ -300,6 +309,7 @@ class PolcaNet(nn.Module):
             del self.decoder.encoder
 
         self.polca_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma, class_labels=class_labels)
+        self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:])
 
     def forward(self, x):
         z = self.encoder(x)
@@ -482,7 +492,10 @@ class PolcaNet(nn.Module):
                 else:
                     targets = None
 
-                loss, aux_losses = self.learn_step(x, optimizer, y=targets)
+                if epoch % 20 == 0:
+                    loss, aux_losses = self.learn_step(x, optimizer, y=targets, loss_analyzer=self.loss_analyzer)
+                else:
+                    loss, aux_losses = self.learn_step(x, optimizer, y=targets)
                 losses["loss"].append(loss.item())
                 for aux_loss, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[aux_loss].item())
@@ -490,14 +503,20 @@ class PolcaNet(nn.Module):
             metrics = {name: np.mean(losses[name]) for name in losses}
             yield epoch, metrics
 
-    def learn_step(self, x, optimizer, y=None):
+    def learn_step(self, x, optimizer, y=None, loss_analyzer=None):
         z, r = self.forward(x)
         yp = z[1] if self.class_labels is not None else None
         z = z[0] if self.class_labels is not None else z
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
+
+        # Analyze conflicts
+        if loss_analyzer is not None:
+            loss_analyzer.analyze([l for l in aux_losses if not isinstance(l, (int, float))])
+        # make the true optimization
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         return loss, aux_losses
 
 
@@ -518,7 +537,9 @@ class EncoderWrapper(nn.Module):
         self.class_labels = class_labels
         self.latent_dim = latent_dim
         self.encoder = encoder
-        self.post_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim, bias=False), nn.Softsign())
+        self.post_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim, bias=False),
+                                          nn.Softsign(),
+                                          )
         if class_labels is not None:
             # create a simple perceptron layer
             self.classifier = nn.Linear(latent_dim, len(class_labels))

@@ -95,7 +95,7 @@ def train_x_mnist(params):
     else:
         decoder = LinearDecoder(latent_dim=latent_dim,
                                 input_dim=input_dim,
-                                hidden_dim=512,
+                                hidden_dim=512 * params.n_channels,
                                 num_layers=5,
                                 act_fn=act_fn,
                                 bias=False,
@@ -104,9 +104,9 @@ def train_x_mnist(params):
     model = PolcaNet(encoder=encoder,
                      decoder=decoder,
                      latent_dim=latent_dim,
-                     alpha=1.0,  # orthogonality loss
-                     beta=1.0,  # variance sorting loss
-                     gamma=1.0,  # variance reduction loss
+                     alpha=0.1,  # orthogonality loss
+                     beta=0.01,  # variance sorting loss
+                     gamma=0.1,  # variance reduction loss
                      class_labels=labels,  # class labels for supervised in case labels is not None
                      )
 
@@ -121,6 +121,11 @@ def train_x_mnist(params):
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-3)
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-4)
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-5)
+
+    # Evaluate loss iteractions
+    ut.set_fig_prefix("bent_train")
+    model.loss_analyzer.print_report()
+    model.loss_analyzer.plot_correlation_matrix(figsize=None)
 
     # ## Evaluate results
     for prefix, data in [("train", X), ("test", X_test)]:
