@@ -161,9 +161,9 @@ model_sin = PolcaNet(
     encoder=encoder_sin,
     decoder=decoder_sin,
     latent_dim=latent_dim,
-    alpha=1.0,  # ortgogonality loss
-    beta=1.0,  # variance sorting loss
-    gamma=1.0,  # variance reduction loss
+    alpha=0.1,  # ortgogonality loss
+    beta=0.01,  # variance sorting loss
+    gamma=0.1,  # variance reduction loss
 )
 print(model_sin)
 summary = torchinfo.summary(
@@ -187,6 +187,11 @@ model_sin.train_model(data=data_sin, batch_size=512, num_epochs=5000, report_fre
 
 # %%
 model_sin.train_model(data=data_sin, batch_size=512, num_epochs=5000, report_freq=20, lr=1e-5)
+
+# %%
+ut.set_fig_prefix("sin_train")
+model_sin.loss_analyzer.print_report()
+model_sin.loss_analyzer.plot_correlation_matrix(figsize=None)
 
 # %%
 ut.set_fig_prefix("sin_train")
@@ -258,9 +263,9 @@ model_bent = PolcaNet(
     encoder=encoder_bent,
     decoder=decoder_bent,
     latent_dim=latent_dim,
-    alpha=1.0,  # ortgogonality loss
-    beta=1.0,  # variance sorting loss
-    gamma=1.0,  # variance reduction loss
+    alpha=0.1,  # ortgogonality loss
+    beta=0.01,  # variance sorting loss
+    gamma=0.1,  # variance reduction loss
 )
 print(model_bent)
 summary = torchinfo.summary(
@@ -284,6 +289,11 @@ model_bent.train_model(data=data_bent, batch_size=512, num_epochs=5000, report_f
 
 # %%
 model_bent.train_model(data=data_bent, batch_size=512, num_epochs=5000, report_freq=20, lr=1e-5)
+
+# %%
+ut.set_fig_prefix("bent_train")
+model_bent.loss_analyzer.print_report()
+model_bent.loss_analyzer.plot_correlation_matrix(figsize=None)
 
 # %%
 ut.set_fig_prefix("bent_train")
