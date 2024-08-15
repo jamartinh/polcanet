@@ -79,7 +79,7 @@ def train_x_mnist(params):
     encoder = ConvEncoder(input_channels=params.n_channels,
                           latent_dim=latent_dim,
                           conv_dim=2,
-                          initial_channels=8,
+                          initial_channels=8 * params.n_channels,
                           growth_factor=2,
                           num_layers=5,
                           act_fn=act_fn,
@@ -118,7 +118,11 @@ def train_x_mnist(params):
 
     model.to(device)
     batch_size = params.batch_size
-    model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-3)
+    if params.n_channels == 3:
+        model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-4)
+    else:
+        model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-3)
+
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-4)
     model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=5000, report_freq=50, lr=1e-5)
 

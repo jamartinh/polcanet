@@ -7,10 +7,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+from IPython.display import display
+from joblib import Parallel, delayed
 from scipy.stats import gaussian_kde
+from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
-from IPython.display import display
+
 from polcanet.utils import save_figure, save_df_to_csv
 
 
@@ -120,6 +123,57 @@ def plot_scatter_corr_matrix(model=None, latents=None, data=None, n_components=5
     cos_sim = cosine_similarity(latents.T)
     num_vars = min(n_components, latents.shape[1])
     plot_corr_scatter(cos_sim, latents, num_vars, save_fig=save_fig)
+
+
+# Improved function to plot only the lower triangular part of the MI matrix
+def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
+    n_features = latent_x.shape[1]
+    # Initialize an empty matrix to store MI values
+    mi_matrix = np.zeros((n_features, n_features))
+
+    def calculate_mi(x, i, j):
+        if i != j:
+            _mi = mutual_info_regression(np.expand_dims(x[:, i], axis=1), x[:, j])[0]
+            return i, j, _mi
+        return i, j, 0
+
+    # Calculate pairwise MI in parallel
+    results = Parallel(n_jobs=20)(delayed(calculate_mi)(latent_x, i, j)
+                                  for i, j in combinations(range(n_features), 2))
+
+    for i, j, mi in results:
+        mi_matrix[i, j] = mi
+        mi_matrix[j, i] = mi
+
+    # # Calculate pairwise MI
+    # for i in range(n_features):
+    #     for j in range(i, n_features):
+    #         if i != j:  # Skip the diagonal
+    #             mi = mutual_info_regression(np.expand_dims(X[:, i], axis=1), X[:, j])[0]
+    #             mi_matrix[i, j] = mi
+    #             mi_matrix[j, i] = mi  # Fill the symmetric element
+
+    # Mask for the upper triangle (to hide it)
+    mask = np.triu(np.ones_like(mi_matrix, dtype=bool))
+
+    # Define the color palette for the heatmap
+    cmap = sns.diverging_palette(220, 20, as_cmap=True)
+
+    # Plot the lower triangular MI matrix using seaborn with enhanced visualization
+    plt.figure()
+    sns.heatmap(mi_matrix, annot=True, cmap=cmap, fmt='.2f',
+                cbar=True, linewidths=0.5, linecolor='gray', mask=mask,
+                annot_kws={"size": 10, "weight": "bold", "color": "black"},
+                vmin=0, vmax=np.nanmax(mi_matrix))  # Normalize color scale to data range
+
+    # Add title with improved formatting
+    plt.title('Pairwise Mutual Information', fontweight='bold')
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    fig_name = save_fig or "mutual_information_matrix.pdf"
+    save_figure(fig_name)
+
+    plt.show()
 
 
 def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
@@ -372,6 +426,10 @@ def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10, 
     # Plot scatter correlation matrix
     save_fig = save_figs[1] if save_figs else None
     plot_scatter_corr_matrix(model, latents=latent_x, n_components=n_components, save_fig=save_fig)
+
+    # plot mutual information matrix
+    save_fig = save_figs[2] if save_figs else None
+    plot_lower_triangular_mutual_information(latent_x, save_fig=save_fig)
 
 
 def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] = None):

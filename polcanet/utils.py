@@ -15,7 +15,7 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from scipy.stats import wilcoxon
 from skimage import exposure
-from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity, normalized_root_mse
 from sklearn import decomposition
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, matthews_corrcoef
@@ -286,7 +286,7 @@ def calculate_metrics(original_images, reconstructed_images):
     metrics = {'Normalized Mean Squared Error': [], 'Peak Signal-to-Noise Ratio': [], 'Structural Similarity Index': []}
 
     for orig, recon in zip(original_images, reconstructed_images):
-        nmse = mean_squared_error(orig, recon) / np.mean(np.square(orig))
+        nmse = normalized_root_mse(orig, recon)
         psnr = peak_signal_noise_ratio(orig, recon, data_range=1)
         # check if the image has a channel dimension and pass the param to the structural similarity function
         channel_axis = None if recon.ndim == 2 else 0
