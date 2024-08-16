@@ -157,7 +157,7 @@ class PolcaNetLoss(nn.Module):
         K_triu = K[idx0, idx1]
 
         # Compute the loss as the mean of the off-diagonal kernel values
-        loss = torch.mean(K_triu)
+        loss = torch.mean(K_triu.square())
         return loss
 
     @staticmethod

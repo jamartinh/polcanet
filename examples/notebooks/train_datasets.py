@@ -213,10 +213,13 @@ def get_torch_dataset(name):
     test_set = dataset(root=f"data/{name}", train=False, download=True, transform=None)
 
     # convert to numpy
-    train_set.data = train_set.data.numpy()
-    test_set.data = test_set.data.numpy()
-    train_set.target = train_set.targets.numpy()
-    test_set.target = test_set.targets.numpy()
+    if not isinstance(train_set.data, np.ndarray):
+        train_set.data = train_set.data.numpy()
+        test_set.data = test_set.data.numpy()
+
+    if not isinstance(train_set.targets, np.ndarray):
+        train_set.target = train_set.targets.numpy()
+        test_set.target = test_set.targets.numpy()
 
     # adjust the data shape for channels first
     if train_set.data.ndim == 4:
@@ -291,10 +294,10 @@ if __name__ == "__main__":
 
     # define console parameters
     args = argparse.ArgumentParser()
-    args.add_argument("--datasets", type=str, nargs="+", help="datasets to train the model")
-    args.add_argument("--device", type=str, default="cuda", help="device to train the model")
+    args.add_argument("--datasets", type=str, nargs="+", help="datasets to train the model on")
+    args.add_argument("--device", type=str, default="cuda", help="device to train the model on")
     args.add_argument("--seed", type=int, default=5, help="random seed")
-    args.add_argument("--with_labels", action="store_true", default=False, help="train with labels")
+    args.add_argument("--with_labels", action="store_true", default=False, help="train with labels (LDA like)")
     args.add_argument("--n_components", type=int, default=28, help="number of components")
     args.add_argument("--batch_size", type=int, default=None, help="batch size")
     args.add_argument("--linear", action="store_true", default=False, help="use linear decoder")

@@ -147,14 +147,6 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
         mi_matrix[i, j] = mi
         mi_matrix[j, i] = mi
 
-    # # Calculate pairwise MI
-    # for i in range(n_features):
-    #     for j in range(i, n_features):
-    #         if i != j:  # Skip the diagonal
-    #             mi = mutual_info_regression(np.expand_dims(X[:, i], axis=1), X[:, j])[0]
-    #             mi_matrix[i, j] = mi
-    #             mi_matrix[j, i] = mi  # Fill the symmetric element
-
     # Mask for the upper triangle (to hide it)
     mask = np.triu(np.ones_like(mi_matrix, dtype=bool))
     # Setup the matplotlib figure
