@@ -62,6 +62,7 @@ from torchvision.datasets import CIFAR10
 # Load CIFAR-10 dataset
 cifar_trainset = CIFAR10(root="data/CIFAR10", train=True, download=True, transform=None)
 cifar_testset = CIFAR10(root="data/CIFAR10", train=False, download=True, transform=None)
+cifar_trainset.data[0].shape
 
 # %%
 train_dataset = cifar_trainset.data / 255.0  #.reshape(-1, 32, 32, 3) / 255.0 

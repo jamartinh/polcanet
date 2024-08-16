@@ -13,6 +13,7 @@ from scipy.stats import gaussian_kde
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
+from torch.ao.nn.quantized.functional import threshold
 
 from polcanet.utils import save_figure, save_df_to_csv
 
@@ -130,6 +131,7 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
     n_features = latent_x.shape[1]
     # Initialize an empty matrix to store MI values
     mi_matrix = np.zeros((n_features, n_features))
+    threshold = 15
 
     def calculate_mi(x, i, j):
         if i != j:
@@ -155,21 +157,23 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
 
     # Mask for the upper triangle (to hide it)
     mask = np.triu(np.ones_like(mi_matrix, dtype=bool))
+    # Setup the matplotlib figure
+    fig, ax = plt.subplots()
 
-    # Define the color palette for the heatmap
-    cmap = sns.diverging_palette(220, 20, as_cmap=True)
+    # Generate a custom diverging colormap
+    cmap = sns.diverging_palette(220, 10, as_cmap=True)
 
-    # Plot the lower triangular MI matrix using seaborn with enhanced visualization
-    plt.figure()
-    sns.heatmap(mi_matrix, annot=True, cmap=cmap, fmt='.2f',
-                cbar=True, linewidths=0.5, linecolor='gray', mask=mask,
-                annot_kws={"size": 10, "weight": "bold", "color": "black"},
-                vmin=0, vmax=np.nanmax(mi_matrix))  # Normalize color scale to data range
+    # Draw the heatmap with the mask and correct aspect ratio
+    sns.heatmap(mi_matrix, mask=mask, cmap=cmap, vmax=1.0, center=0,
+                square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=(mi_matrix.shape[0] <= threshold),
+                fmt='.2f', annot_kws={"size": 10})
+
 
     # Add title with improved formatting
-    plt.title('Pairwise Mutual Information', fontweight='bold')
+    ax.set_title('Pairwise Mutual Information')
     plt.xticks(rotation=45, ha='right')
-    plt.yticks(rotation=0)
+    # Tight layout for better spacing
+    plt.tight_layout()
     fig_name = save_fig or "mutual_information_matrix.pdf"
     save_figure(fig_name)
 

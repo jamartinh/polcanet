@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torchinfo
 from medmnist import INFO
-from torchvision.datasets import MNIST, FashionMNIST
+from torchvision.datasets import MNIST, FashionMNIST, CIFAR10
 
 import polcanet.reports as report
 import polcanet.utils as ut
@@ -26,7 +26,7 @@ torch.autograd.profiler.profile(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 
-def train_x_mnist(params):
+def train(params):
     device = params.device
     random_seed = int(params.seed)
     np.random.seed(random_seed)
@@ -153,23 +153,31 @@ def train_x_mnist(params):
 
 
 def train_on_torch_datasets(params):
-    # frst train without labels
-    for name, dataset in params.datasets.items():
-        train_set, test_set = get_torch_dataset(dataset, name)
+    # first train without labels
+    for name in params.datasets:
+        train_set, test_set = get_torch_dataset(name)
         print(f"Dataset: {name}")
         print(f"Train set: {len(train_set)}")
         print(f"Test set: {len(test_set)}")
+        print(f"Data shape, train: {train_set.data.shape}, test: {test_set.data.shape}")
         params.name = name
         params.train_set = train_set
         params.test_set = test_set
-        params.n_channels = 1
-        params.n_components = 28  # Heuristic sqrt(image size) * n_channels
+        # channels last data
+        if train_set.data.ndim == 4:
+            params.n_channels = train_set.data.shape[1]
+        else:
+            params.n_channels = 1
+        # Assume image is square
+        image_height = train_set.data.shape[-1]
+        params.n_components = image_height * params.n_channels  # Heuristic sqrt(image size) * n_channels
+        # adjust batch size when the train set if > 50000
         if params.batch_size is None:
             if train_set.data.shape[0] >= 50000:
                 params.batch_size = 512
             else:
                 params.batch_size = 256
-        train_x_mnist(params)
+        train(params)
         gc.collect()
 
 
@@ -180,10 +188,12 @@ def train_on_medmnist_datasets(params):
         print(f"Dataset: {name}")
         print(f"Train set: {len(train_set)}")
         print(f"Test set: {len(test_set)}")
+        print(f"Data shape, train: {train_set.data.shape}, test: {test_set.data.shape}")
         params.name = name
         params.train_set = train_set
         params.test_set = test_set
         params.n_channels = INFO[name]['n_channels']
+        # Assume image is square
         params.n_components = 28 * params.n_channels  # Heuristic sqrt(image size) * n_channels
         # adjust batch size when the train set if > 50000
         if params.batch_size is None:
@@ -191,22 +201,34 @@ def train_on_medmnist_datasets(params):
                 params.batch_size = 512
             else:
                 params.batch_size = 256
-        train_x_mnist(params)
+        train(params)
         gc.collect()
 
 
-def get_torch_dataset(dataset, name):
+def get_torch_dataset(name):
     print("Loading dataset: ", name)
+    dataset = torch_datasets_dict[name]
+    os.makedirs(Path(f"data/{name}").absolute(), exist_ok=True)
     train_set = dataset(root=f"data/{name}", train=True, download=True, transform=None)
     test_set = dataset(root=f"data/{name}", train=False, download=True, transform=None)
 
-    # normalize the data
-    train_set.data = train_set.data.reshape(-1, 28, 28) / 255.0
-    test_set.data = test_set.data.reshape(-1, 28, 28) / 255.0
+    # convert to numpy
     train_set.data = train_set.data.numpy()
     test_set.data = test_set.data.numpy()
     train_set.target = train_set.targets.numpy()
     test_set.target = test_set.targets.numpy()
+
+    # adjust the data shape for channels first
+    if train_set.data.ndim == 4:
+        test_set.data = np.moveaxis(train_set.data, -1, 1)
+        train_set.data = np.moveaxis(train_set.data, -1, 1)
+
+    train_set.data = np.squeeze(train_set.data)
+    test_set.data = np.squeeze(test_set.data)
+
+    # normalize the data
+    train_set.data = train_set.data / 255.0
+    test_set.data = test_set.data / 255.0
 
     return train_set, test_set
 
@@ -243,24 +265,27 @@ def get_medmnist_dataset(name):
     return train_set, test_set
 
 
+torch_datasets_dict = {"mnist": MNIST,
+                       "fmnist": FashionMNIST,
+                       "cifar10": CIFAR10,
+                       }
+
+medmnist_datasets_dict = {"breastmnist": "BreastMNIST",
+                          "dermamnist": "Dermamnist",
+                          "octmnist": "OCTMNIST",
+                          "organamnist": "OrganAMNIST",
+                          "organcmnist": "OrganCMNIST",
+                          "organsmnist": "OrganSMNIST",
+                          "pathmnist": "PathMNIST",
+                          "pneumoniamnist": "PneumoniaMNIST",
+                          "retinamnist": "RetinaMNIST",
+                          "bloodmnist": "BloodMNIST",
+                          "chestmnist": "ChestMNIST",
+                          }
+
 if __name__ == "__main__":
     # ### Load dataset
-    torch_datasets_dict = {"mnist": MNIST,
-                           "fmnist": FashionMNIST,
-                           }
 
-    medmnist_datasets_dict = {"breastmnist": "BreastMNIST",
-                              "dermamnist": "Dermamnist",
-                              "octmnist": "OCTMNIST",
-                              "organamnist": "OrganAMNIST",
-                              "organcmnist": "OrganCMNIST",
-                              "organsmnist": "OrganSMNIST",
-                              "pathmnist": "PathMNIST",
-                              "pneumoniamnist": "PneumoniaMNIST",
-                              "retinamnist": "RetinaMNIST",
-                              "bloodmnist": "BloodMNIST",
-                              "chestmnist": "ChestMNIST",
-                              }
     print(f"Available datasets: {torch_datasets_dict.keys()}")
     print(f"Available medmnist datasets: {INFO.keys()}")
 
@@ -275,10 +300,10 @@ if __name__ == "__main__":
     args.add_argument("--linear", action="store_true", default=False, help="use linear decoder")
     parameters = args.parse_args()
 
-    for name in parameters.datasets:
-        assert name in (medmnist_datasets_dict | torch_datasets_dict), f"dataset not available: {name}"
+    for dataset_name in parameters.datasets:
+        assert dataset_name in (medmnist_datasets_dict | torch_datasets_dict), f"dataset not available: {dataset_name}"
         # make a small dict with name, and class with the dataset name in parameters
-        if name in torch_datasets_dict:
+        if dataset_name in torch_datasets_dict:
             train_on_torch_datasets(parameters)
         else:
             train_on_medmnist_datasets(parameters)

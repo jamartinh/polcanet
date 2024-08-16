@@ -289,7 +289,7 @@ def calculate_metrics(original_images, reconstructed_images):
         nmse = normalized_root_mse(orig, recon)
         psnr = peak_signal_noise_ratio(orig, recon, data_range=1)
         # check if the image has a channel dimension and pass the param to the structural similarity function
-        channel_axis = None if recon.ndim == 2 else 0
+        channel_axis = None if orig.ndim == 2 else 0
         ssim = structural_similarity(orig, recon, data_range=1, channel_axis=channel_axis)
 
         metrics['Normalized Mean Squared Error'].append(nmse)
