@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import warnings
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -17,14 +18,13 @@ from scipy.stats import wilcoxon
 from skimage import exposure
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity, normalized_root_mse
 from sklearn import decomposition
+from sklearn.exceptions import DataConversionWarning, ConvergenceWarning, UndefinedMetricWarning
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, matthews_corrcoef
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import minmax_scale
 from sklearn.svm import SVC
-import warnings
-from sklearn.exceptions import DataConversionWarning, ConvergenceWarning, UndefinedMetricWarning
 
 # Filter out specific warnings
 warnings.filterwarnings("ignore", category=DataConversionWarning)
@@ -348,6 +348,7 @@ def get_pca(x, n_components=None, ax=None, title="", save_fig=None):
     plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
     fig_name = save_fig or "pca_explained_variance.pdf"
     save_figure(fig_name)
+    plt.show()
 
     return pca
 
@@ -395,7 +396,7 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
     ax.set_box_aspect(2 / 3)
 
 
-def image_metrics_table(experiment_data: dict, n_components=None):
+def image_metrics_table(experiment_data: dict, n_components=None,kind=None):
     tables = []
 
     for k, (images, model, pca) in experiment_data.items():
@@ -422,12 +423,13 @@ def image_metrics_table(experiment_data: dict, n_components=None):
 
     df_table = pd.concat(tables).set_index("Method")
     display(df_table)
-    save_latex_table(df_table, "image_metrics.tex")
-    save_df_to_csv(df_table, "image_metrics.csv")
+    prefix = "_" + kind if kind else ""
+    save_latex_table(df_table, f"image_metrics{prefix}.tex")
+    save_df_to_csv(df_table, f"image_metrics{prefix}.csv")
     return df_table
 
 
-def make_classification_report(model, pca, X, y, n_components=None):
+def make_classification_report(model, pca, X, y, n_components=None, kind=None):
     # Split the dataset into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
     n_components = n_components or pca.n_components
@@ -559,12 +561,13 @@ def make_classification_report(model, pca, X, y, n_components=None):
     # Display the DataFrames
     print("Performance Metrics DataFrame:")
     display(df_metrics)
-    save_latex_table(df_metrics, "classification_metrics.tex")
-    save_df_to_csv(df_metrics, "classification_metrics.csv")
+    kind = "_" + kind if kind else ""
+    save_latex_table(df_metrics, f"classification_metrics{kind}.tex")
+    save_df_to_csv(df_metrics, f"classification_metrics{kind}.csv")
 
     print("\nWilcoxon Signed-Rank Test Results DataFrame:")
     display(df_wilcoxon)
-    save_latex_table(df_wilcoxon, "wilcoxon_signed_test.tex")
+    save_latex_table(df_wilcoxon, f"wilcoxon_signed{kind}.tex")
     return df_metrics, df_wilcoxon
 
 
@@ -848,6 +851,40 @@ def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
     return images
 
 
+class FakeDataset:
+    def __init__(self):
+        self.data = None
+        self.target = None
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
+def bent(root, train=True, download=True, transform=None, n=32, m=32):
+    # Generate 2D real bent function images data
+    dataset = FakeDataset()
+    if train:
+        dataset.data = generate_bent_images(n, m, num_samples=3000) * 255
+
+    else:
+        dataset.data = generate_bent_images(n, m, num_samples=1000) * 255
+
+    dataset.targets = np.zeros(len(dataset.data))
+    return dataset
+
+
+def sinusoidal(root, train=True, download=True, transform=None, n=32, m=32):
+    # Generate 2D sinusoidal data
+    dataset = FakeDataset()
+    if train:
+        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=1000) * 255
+    else:
+        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=1000) * 255
+
+    dataset.targets = np.zeros(len(dataset.data))
+    return dataset
+
+
 def convert_to_rgb_and_reshape(image_array):
     """
     Convert an array of images to RGB format and reshape it to (image_index, channels, W, H).
@@ -878,3 +915,30 @@ def convert_to_rgb_and_reshape(image_array):
     processed_array = np.array(processed_images)
 
     return processed_array
+
+
+def calculate_compressed_size_and_ratio(initial_size: int, compression_rate: float) -> (int, str):
+    """
+    Calculate the final size after compression and report the compression ratio.
+
+    Parameters:
+    initial_size (int): The original size before compression.
+    compression_rate (float): The desired final compression rate (as a decimal).
+                              For example, 0.5 means the data is compressed to 50% of the original size.
+
+    Returns:
+    tuple: A tuple containing the final size after compression (int) and
+           the compression ratio as a string in the format "X:1".
+    """
+    if compression_rate <= 0 or compression_rate > 1:
+        raise ValueError("Compression rate must be between 0 (exclusive) and 1 (inclusive).")
+
+    # Calculate the final size after compression
+    final_size = initial_size * compression_rate
+    compressed_size = int(final_size)
+
+    # Calculate the compression ratio
+    compression_ratio = initial_size / compressed_size
+    compression_ratio_str = f"{compression_ratio:.1f}:1"
+
+    return compressed_size, compression_ratio_str

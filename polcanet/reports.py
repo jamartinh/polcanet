@@ -13,7 +13,6 @@ from scipy.stats import gaussian_kde
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics.pairwise import cosine_similarity
 from tabulate import tabulate
-from torch.ao.nn.quantized.functional import threshold
 
 from polcanet.utils import save_figure, save_df_to_csv
 
@@ -131,7 +130,7 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
     n_features = latent_x.shape[1]
     # Initialize an empty matrix to store MI values
     mi_matrix = np.zeros((n_features, n_features))
-    threshold = 15
+    threshold = 10
 
     def calculate_mi(x, i, j):
         if i != j:
@@ -159,7 +158,6 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
     sns.heatmap(mi_matrix, mask=mask, cmap=cmap, vmax=1.0, center=0,
                 square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=(mi_matrix.shape[0] <= threshold),
                 fmt='.2f', annot_kws={"size": 10})
-
 
     # Add title with improved formatting
     ax.set_title('Pairwise Mutual Information')
@@ -333,7 +331,7 @@ def analyze_latent_space(model, data=None, latents=None):
     print(tabulate(component_df, headers="keys", tablefmt="grid", showindex=False))
 
 
-def plot_correlation_matrix(corr_matrix, threshold=15, save_fig: str = None):
+def plot_correlation_matrix(corr_matrix, threshold=10, save_fig: str = None):
     """
     Plots a correlation matrix. If the matrix size is below the threshold,
     it includes the correlation values in the cells; otherwise, it does not.

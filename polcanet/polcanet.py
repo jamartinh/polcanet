@@ -16,6 +16,8 @@ class PolcaNetLoss(nn.Module):
     Principal Latent Components Analysis (Polca).
 
     Attributes:
+        r (float): The weight for the reconstruction loss.
+        c (float): The weight for the classification loss.
         alpha (float): The weight for the orthogonality loss.
         beta (float): The weight for the center of mass loss.
         gamma (float): The weight for the low variance loss.
@@ -26,7 +28,7 @@ class PolcaNetLoss(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None):
+    def __init__(self, latent_dim, r=1., c=1., alpha=1., beta=1., gamma=1., class_labels=None):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
@@ -35,6 +37,8 @@ class PolcaNetLoss(nn.Module):
         self.beta = beta
         self.gamma = gamma
         self.class_labels = class_labels
+        self.r = r  # reconstruction loss weight
+        self.c = c  # classification loss weight
 
         pos = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
         self.register_buffer('a', pos)  # normalized axis
@@ -47,6 +51,8 @@ class PolcaNetLoss(nn.Module):
                            }
         if class_labels is not None:
             self.loss_names["class"] = "Classification Loss"
+        else:
+            self.c = 0
 
     def forward(self, z, r, x, yp=None, target=None):
         """
@@ -54,35 +60,27 @@ class PolcaNetLoss(nn.Module):
         z: latent representation
         r: reconstruction
         x: input data
-        n: number of latent dimensions
-        Z: normalized latent representation (L2 norm)
-        S: cosine similarity matrix
         v: variance of latent representation
-        w: normalized variance (L1 norm)
-        e: energy (squared z**2) z being unit vectors
 
         Losses:
-        L1: reconstruction loss
-        L2: orthogonality loss
-        L3: center of mass loss
-        L4: variance reduction loss
-        L: total combined loss
+        L_rec: Reconstruction loss
+        L_ort: Orthogonality loss
+        L_com: Center of mass loss
+        L_var: Variance regularization loss
+        L_class: Classification loss
+
         """
 
-        device = x.device
-        # Reconstruction loss
-        # Purpose: Ensure the model can accurately reconstruct the input data
-        # Method: Mean Squared Error between input and reconstruction
-        L_rec = F.mse_loss(r, x)
+        L_rec = F.mse_loss(r, x) if self.r != 0 else 0
         L_ort = self.orthogonality_loss(z)
         L_com, v = self.center_of_mass_loss(z)
         L_var = v.mean() if self.gamma != 0 else 0
-        L_class = self.classification_loss(yp, target)
+        L_class = self.classification_loss(yp, target) if self.r != 0 else 0
 
         # Combine losses
         # Purpose: Balance all loss components for optimal latent representation
         # Method: Weighted sum of individual losses
-        L = L_rec + L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var
+        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var
 
         if self.class_labels is not None:
             return L, (L_rec, L_ort, L_com, L_var, L_class)
@@ -101,9 +99,6 @@ class PolcaNetLoss(nn.Module):
             return 0, v
 
         w = F.normalize(v, p=1.0, dim=0)
-        # e = torch.mean(z ** 2, dim=0)
-        # e = F.normalize(e, p=1.0, dim=0)
-        # L_com = torch.mean((w + e) * self.a, dim=0)
         L_com = torch.mean(w * self.a, dim=0)
 
         return L_com, v
@@ -281,7 +276,7 @@ class PolcaNet(nn.Module):
 
     """
 
-    def __init__(self, encoder: nn.Module, decoder: nn.Module, latent_dim: int, alpha=1, beta=1, gamma=1,
+    def __init__(self, encoder: nn.Module, decoder: nn.Module, latent_dim: int, r=1., c=1., alpha=1., beta=1., gamma=1.,
                  class_labels=None):
         """
         Initialize PolcaNet with the provided parameters.
@@ -289,9 +284,6 @@ class PolcaNet(nn.Module):
         super().__init__()
 
         self.latent_dim = latent_dim
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.class_labels = class_labels
 
@@ -308,7 +300,7 @@ class PolcaNet(nn.Module):
             self.decoder.encoder = None
             del self.decoder.encoder
 
-        self.polca_loss = PolcaNetLoss(latent_dim, alpha, beta, gamma, class_labels=class_labels)
+        self.polca_loss = PolcaNetLoss(latent_dim, r, c, alpha, beta, gamma, class_labels)
         self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:])
 
     def forward(self, x):
@@ -453,7 +445,10 @@ class PolcaNet(nn.Module):
                         x = batch.to(self.device)
                     y = None
 
-                loss, aux_losses = self.learn_step(x, optimizer=optimizer, y=y)
+                if epoch % 20 == 0:
+                    loss, aux_losses = self.learn_step(x, optimizer, y=y, loss_analyzer=self.loss_analyzer)
+                else:
+                    loss, aux_losses = self.learn_step(x, optimizer, y=y)
                 losses["loss"].append(loss.item())
                 for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[idx].item())
@@ -537,9 +532,14 @@ class EncoderWrapper(nn.Module):
         self.class_labels = class_labels
         self.latent_dim = latent_dim
         self.encoder = encoder
-        self.post_encoder = nn.Sequential(nn.Linear(latent_dim, latent_dim, bias=False),
-                                          nn.Softsign(),
-                                          )
+        layers = []
+        layer = nn.Linear(latent_dim, latent_dim)
+        torch.nn.init.orthogonal_(layer.weight)
+        layers.append(layer)
+        layer = nn.Softsign()
+        layers.append(layer)
+        self.post_encoder = nn.Sequential(*layers)
+
         if class_labels is not None:
             # create a simple perceptron layer
             self.classifier = nn.Linear(latent_dim, len(class_labels))
