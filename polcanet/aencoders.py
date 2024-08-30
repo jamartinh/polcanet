@@ -177,7 +177,7 @@ class ConvEncoder(nn.Module):
     """
 
     def __init__(self, input_channels: int, latent_dim: int, conv_dim: int = 2, num_layers: int = 4,
-                 initial_channels: int = 16, growth_factor: int = 2, act_fn=nn.ReLU):
+                 initial_channels: int = 16, growth_factor: int = 2, act_fn=nn.ReLU, size=32):
         super(ConvEncoder, self).__init__()
 
         self.conv_dim = conv_dim
@@ -193,12 +193,24 @@ class ConvEncoder(nn.Module):
 
         # Initial input channels
         current_channels = input_channels
+        layers.append(nn.BatchNorm2d(input_channels))
 
         # Create convolutional layers
         for i in range(num_layers):
             next_channels = min(initial_channels * (growth_factor ** i), 512)
-            stride = 1 if i < 1 else 2
-            layer = ConvLayer(current_channels, next_channels, kernel_size=3, stride=stride, padding=1)
+            if i == 0:
+                stride = 1
+                kernel_size = 5
+            elif i == 1:
+                stride = 2
+                kernel_size = 3
+            else:
+                stride = 2
+                kernel_size = 3
+
+            layer = ConvLayer(current_channels, next_channels,
+                              kernel_size=kernel_size, stride=stride, padding=kernel_size // 2)
+            nn.init.xavier_uniform_(layer.weight, gain=nn.init.calculate_gain('relu'))
             layers.append(layer)
             layers.append(act_fn())
             current_channels = next_channels
@@ -207,7 +219,8 @@ class ConvEncoder(nn.Module):
         layers.append(nn.Flatten())
 
         # Calculate the flattened size after convolutional layers
-        dummy_input = torch.zeros(1, input_channels, 32, 32) if conv_dim == 2 else torch.zeros(1, input_channels, 32)
+        dummy_input = torch.zeros(1, input_channels, size, size) if conv_dim == 2 else torch.zeros(1, input_channels,
+                                                                                                   size)
         flattened_output_size = nn.Sequential(*layers[:-1])(dummy_input).view(1, -1).size(1)
 
         # Linear layers
@@ -219,6 +232,7 @@ class ConvEncoder(nn.Module):
 
         # Define the encoder as a sequential model
         self.encoder = nn.Sequential(*layers)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -421,7 +435,7 @@ class LinearDecoder(nn.Module):
 
         Example 2: Decoding to a vector shape
             >>> latent_dim = 8
-            >>> input_dim = (20,)  # Shape of a vector with 20 elements
+            >>> input_dim = 20,  # Shape of a vector with 20 elements
             >>> num_layers = 3
             >>> decoder = LinearDecoder(latent_dim, input_dim, num_layers)
             >>> latent_vector = torch.randn((5, latent_dim))  # Batch of 5 latent vectors

@@ -8,12 +8,11 @@ tqdm
 setuptools
 ipython
 scikit-image
-ipywidgets
-SciencePlots
+scienceplots
 seaborn
 torchvision
-cmasher
 torchinfo
 polcanet
 medmnist
-tabulate
+pillow
+joblib

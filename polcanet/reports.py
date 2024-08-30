@@ -1,53 +1,21 @@
 from itertools import combinations
-from typing import List, Dict, Tuple
+from typing import Tuple
 
-import cmasher as cmr
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import scipy
 import seaborn as sns
 import torch
 from IPython.display import display
 from joblib import Parallel, delayed
+from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import gaussian_kde
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics.pairwise import cosine_similarity
-from tabulate import tabulate
 
+from polcanet import utils as ut
 from polcanet.utils import save_figure, save_df_to_csv
-
-
-# def plot_reconstruction_mask(model, data,n_components=None, save_fig: str = None):
-#     latents, reconstructed = model.predict(data)
-#     inputs = data
-#     arr_x = np.zeros((latents.shape[1], latents.shape[1]))
-#     idx = np.tril_indices(latents.shape[1])
-#     arr_x[idx[0], idx[1]] = 1
-#     errors = []
-#     for i in range(latents.shape[1]):
-#         w = arr_x[i, :]
-#         latents = model.encode(inputs)
-#         reconstructed = model.decode(latents, w)
-#         error = np.mean((inputs - reconstructed) ** 2)
-#         errors.append(error)
-#
-#     errors = np.array(errors)
-#     norm_errors = 100 * (errors / (np.max(errors)))
-#
-#     plt.plot(norm_errors,
-#              label="reconstruction mse",
-#              color="black",
-#              alpha=0.7,
-#              linewidth=1,
-#              marker=None,
-#              )
-#
-#     plt.title("Percentage error reduction by adding successive components")
-#     plt.legend()
-#     plt.tight_layout()
-#     fig_name = save_fig or "reconstruction_error_reduction.pdf"
-#     save_figure(fig_name)
-#     plt.show()
 
 
 def analyze_reconstruction_error(model, data, n_samples=10000, save_fig: str = None):
@@ -126,25 +94,8 @@ def plot_scatter_corr_matrix(model=None, latents=None, data=None, n_components=5
 
 
 # Improved function to plot only the lower triangular part of the MI matrix
-def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
-    n_features = latent_x.shape[1]
-    # Initialize an empty matrix to store MI values
-    mi_matrix = np.zeros((n_features, n_features))
+def plot_lower_triangular_mutual_information(mi_matrix, title='Pairwise Mutual Information', save_fig: str = None):
     threshold = 10
-
-    def calculate_mi(x, i, j):
-        if i != j:
-            _mi = mutual_info_regression(np.expand_dims(x[:, i], axis=1), x[:, j])[0]
-            return i, j, _mi
-        return i, j, 0
-
-    # Calculate pairwise MI in parallel
-    results = Parallel(n_jobs=20)(delayed(calculate_mi)(latent_x, i, j)
-                                  for i, j in combinations(range(n_features), 2))
-
-    for i, j, mi in results:
-        mi_matrix[i, j] = mi
-        mi_matrix[j, i] = mi
 
     # Mask for the upper triangle (to hide it)
     mask = np.triu(np.ones_like(mi_matrix, dtype=bool))
@@ -152,15 +103,16 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
     fig, ax = plt.subplots()
 
     # Generate a custom diverging colormap
-    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    # cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    # Get Matplotlib Grays color map
+    cmap = plt.get_cmap('Greys')
 
     # Draw the heatmap with the mask and correct aspect ratio
-    sns.heatmap(mi_matrix, mask=mask, cmap=cmap, vmax=1.0, center=0,
-                square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=(mi_matrix.shape[0] <= threshold),
-                fmt='.2f', annot_kws={"size": 10})
+    sns.heatmap(mi_matrix, mask=mask, cmap=cmap, vmax=1.0, vmin=0, center=0.5, square=True, linewidths=.5,
+                cbar_kws={"shrink": .5}, annot=(mi_matrix.shape[0] <= threshold), fmt='.2f', annot_kws={"size": 10})
 
     # Add title with improved formatting
-    ax.set_title('Pairwise Mutual Information')
+    ax.set_title(title)
     plt.xticks(rotation=45, ha='right')
     # Tight layout for better spacing
     plt.tight_layout()
@@ -170,14 +122,37 @@ def plot_lower_triangular_mutual_information(latent_x, save_fig: str = None):
     plt.show()
 
 
+def calculate_mutual_information(latent_x):
+    n_features = latent_x.shape[1]
+    # Initialize an empty matrix to store MI values
+    mi_matrix = np.zeros((n_features, n_features))
+
+    def calculate_mi(x, i, j):
+        if i != j:
+            _mi = mutual_info_regression(np.expand_dims(x[:, i], axis=1), x[:, j])[0]
+            return i, j, _mi
+        return i, j, 0
+
+    # Calculate pairwise MI in parallel
+    results = Parallel(n_jobs=20)(delayed(calculate_mi)(latent_x, i, j) for i, j in combinations(range(n_features), 2))
+    for i, j, mi in results:
+        mi_matrix[i, j] = mi
+        mi_matrix[j, i] = mi
+    return mi_matrix
+
+
 def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
     # Create a figure and a grid of subplots
     fig, axes = plt.subplots(n - 1, n)
 
     # Adjust spacing between plots
-    plt.subplots_adjust(wspace=0., hspace=0.)
+    plt.subplots_adjust(wspace=0.1, hspace=0.2)
 
-    cmap = cmr.iceburn
+    # Create the colormap
+    sigma = 0.25  # Adjust this parameter to control the width of the black peak
+    colors = plt.cm.binary(np.exp(-((np.linspace(-1, 1, 256)) ** 2) / (2 * sigma ** 2)))
+    cmap = LinearSegmentedColormap.from_list("gaussian_black", colors)
+
     # Loop over the indices to create scatter plots for the lower triangle
     for i in range(1, n):
         for j in range(i):
@@ -191,7 +166,6 @@ def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
             axes[i - 1, j].axis('square')
 
             # Annotate correlation value if the number of variables is small
-
             if n <= 5:
                 corr_text = f"{corr_matrix[i, j]:.2f}"
                 legend = axes[i - 1, j].legend([corr_text], loc='best')
@@ -225,110 +199,10 @@ def plot_corr_scatter(corr_matrix, latents, n, save_fig: str = None):
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), orientation='vertical', fraction=0.02, pad=0.04, shrink=.5)
     cbar.outline.set_edgecolor('none')  # Remove color bar border
-
-    # Add a main title
-    # plt.suptitle("Cosine Similarity Matrix of Latent Features")
     fig_name = save_fig or "scatter_correlation_matrix.pdf"
     save_figure(fig_name)
     # Show plot
     plt.show()
-
-
-def analyze_latent_space(model, data=None, latents=None):
-    """
-    Perform a comprehensive text-based analysis of the latent space for a specialized autoencoder
-    that concentrates variance in the first dimensions and aims to disentangle features by orthogonalization
-    of the latent space.
-
-    Parameters:
-    - encoder: The autoencoder encoder instance
-    - data: Input data (numpy array), optional if latents are provided
-    - latents: Latent representations (numpy array), optional if data is provided
-    """
-    if latents is None and data is None:
-        raise ValueError("Either latents or data must be provided")
-
-    if latents is None:
-        latents = model.encode(data)
-
-    n_components = latents.shape[1]
-
-    # Compute the correlation matrix and variances
-    corr = np.corrcoef(latents.T)
-    variances = np.var(latents, axis=0)
-
-    # Off-diagonal correlations
-    off_diag_corr = corr[np.triu_indices(n_components, k=1)]
-
-    # Explained variance ratio
-    explained_variance_ratio = variances / np.sum(variances)
-    cumulative_variance_ratio = np.cumsum(explained_variance_ratio)
-
-    # Compute specialized metrics
-    variance_concentration = np.sum(variances * np.arange(n_components, 0, -1)) / (np.sum(variances) * n_components)
-    decorrelation_metric = 1 - np.mean(np.abs(off_diag_corr))
-
-    # Print report
-    print("\n" + "=" * 50)
-    print("Latent Space Analysis Report".center(50))
-    print("=" * 50 + "\n")
-
-    print("1. General Information")
-    print("-" * 30)
-    print(f"Number of latent components: {n_components}")
-    print(f"Total variance in latent space: {np.sum(variances):.4f}")
-    print()
-
-    print("2. Variance Analysis")
-    print("-" * 30)
-    variance_table = [["First component", f"{explained_variance_ratio[0]:.4f}"],
-                      ["First 5 components", f"{np.sum(explained_variance_ratio[:5]):.4f}"],
-                      ["Components for 95% variance", f"{np.argmax(cumulative_variance_ratio >= 0.95) + 1}"],
-                      ["Variance Concentration Metric", f"{variance_concentration:.4f}"]]
-    print(tabulate(variance_table, headers=["Metric", "Value"]))
-    print("\nVariance Concentration Interpretation:")
-    if variance_concentration > 0.8:
-        print("Excellent concentration of variance in earlier dimensions.")
-    elif variance_concentration > 0.6:
-        print("Good concentration of variance, but there might be room for improvement.")
-    else:
-        print("Poor concentration of variance. The encoder may need adjustment.")
-    print()
-
-    print("3. Orthogonality Analysis")
-    print("-" * 30)
-    corr_table = [["Mean absolute off-diagonal", f"{np.mean(np.abs(off_diag_corr)):.4f}"],
-                  ["Median absolute off-diagonal", f"{np.median(np.abs(off_diag_corr)):.4f}"],
-                  ["Max absolute off-diagonal", f"{np.max(np.abs(off_diag_corr)):.4f}"],
-                  ["Proportion of |Orthogonality| > 0.1", f"{np.mean(np.abs(off_diag_corr) > 0.1):.4f}"],
-                  ["Orthogonality Success Metric", f"{decorrelation_metric:.4f}"]]
-    print(tabulate(corr_table, headers=["Metric", "Value"]))
-    print("\nOrthogonality Interpretation:")
-    if decorrelation_metric > 0.9:
-        print("Excellent orthogonality of features.")
-    elif decorrelation_metric > 0.7:
-        print("Good orthogonality, but there might be room for improvement.")
-    else:
-        print("Poor orthogonality. The encoder may need adjustment.")
-    print()
-
-    print("4. Detailed Component Analysis")
-    print("-" * 30)
-    top_n = min(10, n_components)  # Analyze top 10 components or all if less than 10
-
-    component_df = pd.DataFrame(
-        columns=["Component", "Variance Ratio", "Cumulative Variance", "Mean |Correlation| with Others"])
-    for i in range(top_n):
-        corr_list = np.array([idx for idx in range(top_n) if idx != i])
-        component_df.loc[i] = {
-                "Component": i + 1,
-                "Variance Ratio": f"{explained_variance_ratio[i]:.4f}",
-                "Cumulative Variance": f"{cumulative_variance_ratio[i]:.4f}",
-                "Mean |Correlation| with Others": f"{np.mean(np.abs(corr[i, corr_list])):.4f}"
-        }
-
-    # print(component_df.to_string())
-    print(tabulate(component_df, headers="keys", tablefmt="grid", showindex=False))
 
 
 def plot_correlation_matrix(corr_matrix, threshold=10, save_fig: str = None):
@@ -351,15 +225,15 @@ def plot_correlation_matrix(corr_matrix, threshold=10, save_fig: str = None):
     fig, ax = plt.subplots()
 
     # Generate a custom diverging colormap
-    cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    # cmap = sns.diverging_palette(220, 10, as_cmap=True)
+    cmap = plt.get_cmap('Greys')
 
     # Draw the heatmap with the mask and correct aspect ratio
-    sns.heatmap(corr_matrix, mask=mask, cmap=cmap, vmax=1.0, center=0,
-                square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=(corr_matrix.shape[0] <= threshold),
-                fmt='.2f', annot_kws={"size": 10})
+    sns.heatmap(corr_matrix, mask=mask, cmap=cmap, vmax=1.0, vmin=0, center=0.5, square=True, linewidths=.5,
+                cbar_kws={"shrink": .5}, annot=(corr_matrix.shape[0] <= threshold), fmt='.2f', annot_kws={"size": 10})
 
     # Add titles and labels
-    ax.set_title('Cosine Similarity Matrix of Latent Features')
+    ax.set_title('Cosine Similarity Matrix')
     plt.xticks(rotation=45, ha='right')
 
     # Tight layout for better spacing
@@ -370,7 +244,7 @@ def plot_correlation_matrix(corr_matrix, threshold=10, save_fig: str = None):
     plt.show()
 
 
-def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10, save_figs: Tuple[str] = None):
+def orthogonality_test_analysis(model, pca, data, num_samples=1000, n_components=10, save_figs: Tuple[str] = None):
     """
     Analyze the orthogonality of the latent features of the autoencoder.
 
@@ -387,43 +261,70 @@ def orthogonality_test_analysis(model, data, num_samples=1000, n_components=10, 
 
     # Encode the samples
     latent_x = model.encode(x_samples)
+    latent_pca = pca.transform(np.squeeze(x_samples.reshape(x_samples.shape[0], -1)))
 
     # Calculate cosine similarity matrix
     cosine_sim = cosine_similarity(latent_x.T)
 
     # Extract the upper triangular part of the similarity matrix, excluding the diagonal
     upper_triangular_indices = np.triu_indices_from(cosine_sim, k=1)
-    upper_triangular_values = cosine_sim[upper_triangular_indices]
+    upper_triangular_values = np.abs(cosine_sim[upper_triangular_indices])
 
     # Reporting text with statistics
-    report = f"""
-    Orthogonality Test Analysis
-    ============================
-
-    This report analyzes the orthogonality of the latent features generated by the autoencoder.
-    We used a sample size of {num_samples} randomly selected data points for the analysis.
-
-    The orthogonality of the features is assessed by minimizing the cosine distance between the 
-    latent features. The cosine similarity values between the features are summarized below:
-
-    - Mean cosine similarity: {np.mean(upper_triangular_values):.4f}
-    - Max cosine similarity: {np.max(upper_triangular_values):.4f}
-    - Min cosine similarity: {np.min(upper_triangular_values):.4f}
-    """
-
-    print(report)
+    # Create a report based on a DataFrame
+    df_report = pd.DataFrame(columns=["Metric", "Value"])
+    df_report.loc[len(df_report)] = ["Mean cosine similarity", np.mean(upper_triangular_values)]
+    df_report.loc[len(df_report)] = ["Median cosine similarity", np.median(upper_triangular_values)]
+    df_report.loc[len(df_report)] = ["Standard deviation of cosine similarity", np.std(upper_triangular_values)]
+    df_report.loc[len(df_report)] = ["Max cosine similarity", np.max(upper_triangular_values)]
+    df_report.loc[len(df_report)] = ["Min cosine similarity", np.min(upper_triangular_values)]
+    display(df_report)
+    # Save the report to a CSV file
+    save_df_to_csv(df_report, "orthogonality_report.csv")
 
     # Plot cosine similarity matrix
     save_fig = save_figs[0] if save_figs else None
-    plot_correlation_matrix(pd.DataFrame(cosine_sim), threshold=15, save_fig=save_fig)
+    plot_correlation_matrix(pd.DataFrame(cosine_sim).abs(), save_fig=save_fig)
+
+    # plot mutual information matrix for model
+    save_fig = save_figs[2] if save_figs else None
+    mi_matrix = calculate_mutual_information(latent_x)
+
+    # get the upper triangular part of the matrix
+    upper_triangular = np.triu(mi_matrix, k=1)
+    # create a report based on a DataFrame
+    df_report = pd.DataFrame(columns=["Metric", "Value"])
+    df_report.loc[len(df_report)] = ["Mean mutual information", np.mean(upper_triangular)]
+    df_report.loc[len(df_report)] = ["Median mutual information", np.median(upper_triangular)]
+    df_report.loc[len(df_report)] = ["Standard deviation of mutual information", np.std(upper_triangular)]
+    df_report.loc[len(df_report)] = ["Max mutual information", np.max(upper_triangular)]
+    df_report.loc[len(df_report)] = ["Min mutual information", np.min(upper_triangular)]
+    display(df_report)
+    # Save the report to a CSV file
+    save_df_to_csv(df_report, "mutual_information_report_polca.csv")
+    plot_lower_triangular_mutual_information(mi_matrix,title='Pairwise Mutual Information POLCA', save_fig="mutual_information_matrix_polca.pdf")
+
+    # plot mutual information matrix for PCA
+    save_fig = save_figs[3] if save_figs else None
+    mi_matrix_pca = calculate_mutual_information(latent_pca)
+
+    # get the upper triangular part of the matrix
+    upper_triangular_pca = np.triu(mi_matrix_pca, k=1)
+    # create a report based on a DataFrame
+    df_report = pd.DataFrame(columns=["Metric", "Value"])
+    df_report.loc[len(df_report)] = ["Mean mutual information", np.mean(upper_triangular_pca)]
+    df_report.loc[len(df_report)] = ["Median mutual information", np.median(upper_triangular_pca)]
+    df_report.loc[len(df_report)] = ["Standard deviation of mutual information", np.std(upper_triangular_pca)]
+    df_report.loc[len(df_report)] = ["Max mutual information", np.max(upper_triangular_pca)]
+    df_report.loc[len(df_report)] = ["Min mutual information", np.min(upper_triangular_pca)]
+    display(df_report)
+    # Save the report to a CSV file
+    save_df_to_csv(df_report, "mutual_information_report_pca.csv")
+    plot_lower_triangular_mutual_information(mi_matrix_pca,title='Pairwise Mutual Information PCA', save_fig="mutual_information_matrix_pca.pdf")
 
     # Plot scatter correlation matrix
     save_fig = save_figs[1] if save_figs else None
     plot_scatter_corr_matrix(model, latents=latent_x, n_components=n_components, save_fig=save_fig)
-
-    # plot mutual information matrix
-    save_fig = save_figs[2] if save_figs else None
-    plot_lower_triangular_mutual_information(latent_x, save_fig=save_fig)
 
 
 def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] = None):
@@ -436,7 +337,7 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     - num_samples: Number of samples to test (default: 1000)
     """
     num_samples = min(num_samples, data.shape[0])
-    n_components = data.shape[1]
+
     # Select random samples from the data
     indices = np.random.choice(data.shape[0], num_samples, replace=False)
     x_samples = data[indices]
@@ -449,31 +350,11 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
 
     # Calculate center of mass
     components = np.arange(1, len(variances) + 1)
-    center_of_mass = np.sum(components * variances) / np.sum(variances)
 
     # Calculate exponential fit for variance
     normalized_variances = variances / np.sum(variances)
     exp_fit = np.exp(-components)
     exp_fit /= np.sum(exp_fit)
-
-    # Reporting text with statistics
-    report = f"""
-    Variance Test Analysis
-    =======================
-
-    This report analyzes the variance concentration of the latent features generated by the autoencoder.
-    We used a sample size of {num_samples} randomly selected data points for the analysis.
-
-    The variance concentration of the features is assessed by minimizing the center of mass of the 
-    latent space and fitting the variance distribution to an exponential distribution. The results 
-    are summarized below:
-
-    - Center of mass: {center_of_mass:.4f}
-    - Variance fit to exponential distribution (sum of squared differences):
-     {np.sum((normalized_variances - exp_fit) ** 2):.4f}
-    """
-
-    print(report)
 
     # Plot variance distribution and exponential fit
     fig, ax = plt.subplots()
@@ -482,8 +363,9 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.plot(components, exp_fit, 'r--', label='Exponential ref')
     ax.set_title('Variance Distribution of latent space')
     ax.set_xlabel('Components')
+    # ax.set_xticks(components, labels=[f"$x_{i}$" for i in components])
     ax.set_ylabel('Normalized Variance')
-    ax.grid(True)
+    # ax.grid(True)
     ax.legend()
     plt.tight_layout()
     fig_name = "variance_distribution.pdf"
@@ -493,19 +375,16 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     # Plot cumulative variance
     # Compute cumulative explained variance ratio
     cumulative_variance = np.cumsum(normalized_variances)
-    # plot_components_cdf(cumulative_variance, n_components, title='Cumulative Variance', ax=ax)
-    # fig_name = save_fig or "cumulative_variance.pdf"
-    # save_figure(fig_name)
-
     components_90 = np.argmax(cumulative_variance >= 0.9) + 1
     components_95 = np.argmax(cumulative_variance >= 0.95) + 1
-    fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
+    fig, ax = plt.subplots()
     ax.plot(components, cumulative_variance, 'o-', label='Cumulative Variance', color='black', alpha=0.7, linewidth=1,
             markersize=2)
     ax.set_title('Cumulative Variance of latent space')
     ax.set_xlabel('Components')
     ax.set_ylabel('Cumulative Variance')
-    ax.grid(True)
+    # ax.set_xticks(components, labels=[f"$x_{i}$" for i in components])
+    # ax.grid(True)
 
     # Add some reference lines
     total_components = len(variances)
@@ -514,115 +393,38 @@ def variance_test_analysis(model, data, num_samples=1000, save_figs: Tuple[str] 
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
                label=f"95% by {(100 * components_95 / total_components):.1f}% ({components_95}) components")
     ax.legend()
-    # set x-axis from 1 to n_components
-    # ax.set_xlim(1, n_components)
-    # set y-axis from 0 to 1
-    ax.set_ylim(0, 1)
-    ax.set_box_aspect(2 / 3)
+    plt.tight_layout()
     fig_name = "cumulative_variance.pdf"
     save_figure(fig_name)
     plt.show()
 
     # Analyze and plot variance concentration
     top_n = min(20, len(variances))  # Analyze top 20 components or all if less than 10
-    component_table = []
-    for i in range(top_n):
-        component_table.append([i + 1, f"{normalized_variances[i]:.4f}", f"{cumulative_variance[i]:.4f}"])
 
     # Plot variance concentration in top components
     fig, ax = plt.subplots()
-    ax.barh(range(1, top_n + 1), normalized_variances[:top_n], fill=False, edgecolor='k', linewidth=1)
+    # get a twin axis
+    ax2 = ax.twinx()
 
-    ax.set_title('Variance Concentration of latent space')
+    max_value = np.max(normalized_variances[:top_n])
+    ax.set_xlim(0, max_value + 0.15)
+    bar = ax.barh(range(1, top_n + 1), normalized_variances[:top_n], fill=False, edgecolor='k', linewidth=1,
+                  align="center")
+    ax.bar_label(bar, fmt='%.2f', fontsize=8, padding=5)
+    ax.set_title('Variance Concentration by component')
     ax.set_ylabel('Components')
     ax.set_xlabel('Normalized Variance')
     # increase the limit of x-axis
-    x_axis_lim = np.max(normalized_variances[:top_n])
-    ax.set_xlim(0, x_axis_lim + 0.2)
-
-    ax.set_yticks(range(1, top_n + 1), labels=range(1, top_n + 1))
+    ax.set_yticks(range(1, top_n + 1))
+    ax2.set_yticks(range(1, top_n + 1), labels=[f'{v2:.2f}' for v2 in cumulative_variance[:top_n]], fontsize=8)
+    ax2.set_ylim(ax.get_ylim())
     ax.invert_yaxis()  # labels read top-to-bottom
-    # Add the value to each bar at the middle
-    for i, (v1, v2) in enumerate(zip(normalized_variances[:top_n], cumulative_variance[:top_n])):
-        # make the text color black an appearing as a percentage
-        ax.text(x_axis_lim + 0.015, i + 1, f'{v1:.2f}', color='black', va='center', ha='left',
-                fontsize=8)
-        ax.text(x_axis_lim + 0.075, i + 1, f'{v2:.2f}', color='black', va='center', ha='left',
-                fontsize=8)
+    ax2.invert_yaxis()  # labels read top-to-bottom
 
     plt.tight_layout()
     fig_name = "variance_concentration.pdf"
     save_figure(fig_name)
     plt.show()
-
-
-def linearity_test_plot_old(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
-    model.eval()
-    shape = x.shape
-    num_samples = shape[0]
-    x = x.view(shape[0], -1)
-    y = y.view(shape[0], -1)
-
-    def f(z):
-        return model(z).detach().view(shape[0], -1)
-
-    with torch.no_grad():
-        # Test Additivity
-        xx = f(x + y)
-        fx_shape = xx.shape
-        yy = f(x) + f(y)
-        xx = xx.cpu().numpy().flatten()
-        yy = yy.cpu().numpy().flatten()
-        additivity_corr = np.corrcoef(xx, yy)[0, 1]
-
-        # Test Homogeneity
-        #     Generate alpha values between -2 and 2
-        alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
-        xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
-        alpha = alpha.repeat(1, fx_shape[1])
-        yy_alpha = alpha * f(x)
-        xx_alpha = xx_alpha.cpu().numpy().flatten()
-        yy_alpha = yy_alpha.cpu().numpy().flatten()
-        alpha_colors = alpha.cpu().numpy().flatten()
-        homogeneity_corr = np.corrcoef(xx_alpha, yy_alpha)[0, 1]
-
-    fig, (ax1, ax2) = plt.subplots(1, 2)
-    print(xx.shape)
-    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
-    min_val = min(xx.min(), yy.min())
-    max_val = max(xx.max(), yy.max())
-    ax1.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
-    ax1.set_xlabel(r"$f(x + y)$")
-    ax1.set_ylabel(r"$f(x) + f(y)$")
-    ax1.set_title(f"Additivity\n correlation: {additivity_corr:.4f}")
-    # # Add horizontal and vertical lines at 0
-    ax1.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
-    ax1.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
-    ax1.set_aspect("equal")
-
-    # Homogeneity plot
-    print(xx_alpha.shape)
-    scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
-    min_val = min(xx_alpha.min(), yy_alpha.min())
-    max_val = max(xx_alpha.max(), yy_alpha.max())
-    ax2.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
-    ax2.set_xlabel(r"$f(\alpha x)$")
-    ax2.set_ylabel(r"$\alpha f(x)$")
-    ax2.set_title(f"Homogeneity\n correlation: {homogeneity_corr:.4f}")
-    ax2.set_aspect("equal")
-
-    # # Add colorbar for alpha values
-    fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
-
-    # # Add horizontal and vertical lines at 0
-    ax2.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
-    ax2.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
-
-    plt.tight_layout()
-    fig_name = save_fig or "linearity_test.pdf"
-    save_figure(fig_name)
-    plt.show()
-    return additivity_corr, homogeneity_corr
 
 
 def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = None):
@@ -644,6 +446,7 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         yy = yy.cpu().numpy().flatten()
         additivity_corr = np.corrcoef(xx, yy)[0, 1]
 
+
         # Test Homogeneity
         alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
         xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
@@ -654,22 +457,34 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         alpha_colors = alpha.cpu().numpy().flatten()
         homogeneity_corr = np.corrcoef(xx_alpha, yy_alpha)[0, 1]
 
-        # Test Lipschitz condition
-        # We calculate |f(x) - f(y)| and |x - y|
-        f_x = f(x)
-        f_y = f(y)
-        diff_fxy = torch.norm(f_x - f_y, dim=1)
-        diff_xy = torch.norm(x - y, dim=1)
-        diff_fxy = diff_fxy.cpu().numpy()
-        diff_xy = diff_xy.cpu().numpy()
-        lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
+        # # Test Lipschitz condition  # # We calculate |f(x) - f(y)| and |x - y|
+        # alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
+        # f_x = f(x)
+        # alpha_x = alpha.repeat(1, x.shape[1])
+        #
+        # f_y = f(x + alpha_x)
+        # diff_fxy = torch.linalg.vector_norm(f_x - f_y, dim=1)
+        # diff_xy = alpha.squeeze()  # diff_fxy = diff_fxy.cpu().numpy()
+        # diff_xy = diff_xy.cpu().numpy()
+        # lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
+
+
+
+
+    # take a random sample of size at most 1000 of xx and yy since this is a heavy scatter plot
+    indices = np.random.choice(xx.shape[0], max(10*num_samples,xx.shape[0]), replace=False)
+    xx = xx[indices]
+    yy = yy[indices]
+    add_colors = alpha_colors[indices]
+    xx_alpha = xx_alpha[indices]
+    yy_alpha = yy_alpha[indices]
+    alpha_colors = alpha_colors[indices]
 
     # Plotting results
-    # fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
     fig, (ax1, ax2) = plt.subplots(1, 2)
 
     # Additivity plot
-    ax1.scatter(xx, yy, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
+    ax1.scatter(xx, yy, c=add_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
     min_val = min(xx.min(), yy.min())
     max_val = max(xx.max(), yy.max())
     ax1.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
@@ -683,7 +498,6 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
 
     # Homogeneity plot
     scatter = ax2.scatter(xx_alpha, yy_alpha, c=alpha_colors, cmap='coolwarm', alpha=0.7, s=1, rasterized=True)
-
     min_val = min(xx_alpha.min(), yy_alpha.min())
     max_val = max(xx_alpha.max(), yy_alpha.max())
     ax2.plot([min_val, max_val], [min_val, max_val], "k--", lw=1)
@@ -696,23 +510,26 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
     fig.colorbar(scatter, ax=ax2, fraction=0.04, label=r"$\alpha$ values")
     ax2.axhline(y=0, color='k', linestyle=':', linewidth=0.5)
     ax2.axvline(x=0, color='k', linestyle=':', linewidth=0.5)
-
-    # # Lipschitz condition plot
-    # ax3.scatter(diff_xy, diff_fxy, c='k', alpha=0.7, s=2, rasterized=True)
-    # ax3.set_xlim(min(diff_xy),max(diff_xy))
-    # ax3.set_xlabel(r"$|x - y|$")
-    # ax3.set_ylabel(r"$|f(x) - f(y)|$")
-    # ax3.set_title(f"Lipschitz:\n{lipschitz_corr:.2f}")
-    # ax3.set_aspect("equal")
-    # ax3.axis("square")
-
     plt.tight_layout()
 
-    fig_name = save_fig or "linearity_test.pdf"
+    fig_name = save_fig or "linearity_properties.pdf"
     save_figure(fig_name)
     plt.show()
 
-    return additivity_corr, homogeneity_corr, lipschitz_corr
+    # fig2, ax = plt.subplots(figsize=(5,5))
+    # # # Lipschitz condition plot
+    # #ax.scatter(diff_xy, diff_fxy, c='k', alpha=0.7, s=2, rasterized=True)
+    # ax.plot(diff_xy, diff_fxy, c='k', alpha=0.7, lw=1)
+    # ax.set_xlabel(r"$\epsilon$")
+    # ax.set_ylabel(r"$||f(x) - f(x+\epsilon)||_2$")
+    # ax.set_title(f"Lipschitz:\n{lipschitz_corr:.2f}")
+    # plt.tight_layout()
+    #
+    # fig_name = "Lipschitz_condition.pdf"
+    # save_figure(fig_name)
+    # plt.show()
+
+    return additivity_corr, homogeneity_corr, None
 
 
 def get_data_samples(model, data, num_samples):
@@ -744,211 +561,15 @@ def linearity_tests_analysis(model, data, alpha_min=-1, alpha_max=1, num_samples
     linearity_test_plot(model.decoder, latent_x, latent_y, alpha_min=alpha_min, alpha_max=alpha_max, save_fig=save_fig)
 
 
-class LossConflictAnalyzer:
-    def __init__(self, model: torch.nn.Module, loss_names: List[str] = None, conflict_threshold: float = 0.1):
-        self.pairwise_similarities = {}
-        self.pairwise_conflicts = {}
-        self.pairwise_interactions = {}
-        self.total_conflicts = 0
-        self.total_interactions = 0
-        self.model = model
-        self.loss_names = loss_names if loss_names else []
-        self.conflict_threshold = conflict_threshold
-        self.reset_statistics()
+def embedding_analysis(model, pca, data, targets, labels_dict, num_samples=5000):
+    num_samples = min(num_samples, data.shape[0])
+    indices = np.random.choice(data.shape[0], num_samples, replace=False)
+    x_samples = data[indices]
+    targets_samples = targets[indices]
 
-    def reset_statistics(self):
-        self.total_interactions = 0
-        self.total_conflicts = 0
-        self.pairwise_interactions = {}
-        self.pairwise_conflicts = {}
-        self.pairwise_similarities = {}
-
-    def analyze(self, losses: List[torch.Tensor]) -> None:
-        if len(losses) != len(self.loss_names):
-            raise ValueError("Number of losses must match number of loss names")
-
-        grads = self._compute_grad(losses)
-        self._analyze_conflicts(grads)
-
-    def _compute_grad(self, losses: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
-        grads = []
-        for loss in losses:
-            self.model.zero_grad()
-            loss.backward(retain_graph=True)
-            grad_dict = {name: param.grad.clone() for name, param in self.model.named_parameters() if
-                         param.grad is not None}
-            grads.append(grad_dict)
-        return grads
-
-    def _analyze_conflicts(self, grads: List[Dict[str, torch.Tensor]]) -> None:
-        num_losses = len(grads)
-
-        for (i, j) in combinations(range(num_losses), 2):
-            conflict_key = self._get_conflict_key(i, j)
-            g_i, g_j = grads[i], grads[j]
-
-            similarity = self._compute_similarity(g_i, g_j)
-
-            self.total_interactions += 1
-            self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
-            self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [similarity]
-
-            if similarity < -self.conflict_threshold:
-                self.total_conflicts += 1
-                self.pairwise_conflicts[conflict_key] = self.pairwise_conflicts.get(conflict_key, 0) + 1
-
-    @staticmethod
-    def _compute_similarity(grad1: Dict[str, torch.Tensor], grad2: Dict[str, torch.Tensor]) -> float:
-        dot_product = 0
-        norm1 = 0
-        norm2 = 0
-        for name in grad1.keys():
-            if name in grad2:
-                g1, g2 = grad1[name], grad2[name]
-                dot_product += torch.sum(g1 * g2).item()
-                norm1 += torch.sum(g1 * g1).item()
-                norm2 += torch.sum(g2 * g2).item()
-
-        if norm1 == 0 or norm2 == 0:
-            return 0
-        return dot_product / (np.sqrt(norm1) * np.sqrt(norm2))
-
-    def _get_conflict_key(self, i: int, j: int) -> Tuple[str, str]:
-        return self.loss_names[i], self.loss_names[j]
-
-    def report(self) -> Tuple[Dict[str, float], pd.DataFrame]:
-        overall_conflict_rate = self.total_conflicts / max(1, self.total_interactions)
-
-        report_dict = {
-                'total_interactions': self.total_interactions,
-                'total_conflicts': self.total_conflicts,
-                'overall_conflict_rate': overall_conflict_rate,
-                'pairwise_data': {}
-        }
-
-        df_data = []
-
-        for (loss1, loss2), interactions in self.pairwise_interactions.items():
-            conflicts = self.pairwise_conflicts.get((loss1, loss2), 0)
-            similarities = self.pairwise_similarities[(loss1, loss2)]
-            avg_similarity = np.mean(similarities)
-            conflict_rate = conflicts / interactions if interactions > 0 else 0
-
-            if avg_similarity > self.conflict_threshold:
-                relationship = "Strongly Cooperative"
-            elif avg_similarity > 0:
-                relationship = "Weakly Cooperative"
-            elif avg_similarity > -self.conflict_threshold:
-                relationship = "Weakly Conflicting"
-            else:
-                relationship = "Strongly Conflicting"
-
-            report_dict['pairwise_data'][(loss1, loss2)] = {
-                    'interactions': interactions,
-                    'conflicts': conflicts,
-                    'conflict_rate': conflict_rate,
-                    'avg_similarity': avg_similarity,
-                    'relationship': relationship
-            }
-
-            df_data.append({
-                    'loss1': loss1,
-                    'loss2': loss2,
-                    'interactions': interactions,
-                    'conflicts': conflicts,
-                    'conflict_rate': conflict_rate,
-                    'avg_similarity': avg_similarity,
-                    'relationship': relationship
-            })
-
-        df = pd.DataFrame(df_data)
-        df = df.sort_values('avg_similarity').reset_index(drop=True)
-
-        return report_dict, df
-
-    def print_report(self) -> None:
-        report_dict, df = self.report()
-        print(f"Loss Interaction Analysis Report:")
-        print(f"Total interactions: {report_dict['total_interactions']}")
-        print(f"Total conflicts: {report_dict['total_conflicts']}")
-        print(f"Overall conflict rate: {report_dict['overall_conflict_rate']:.4f}")
-        print(f"\nPairwise Statistics (sorted by similarity):")
-
-        def color_cells(val, column):
-            if column == 'relationship':
-                colors = {
-                        "Strongly Cooperative": "color: green",
-                        "Weakly Cooperative": "color: green",
-                        "Weakly Conflicting": "color: coral",
-                        "Strongly Conflicting": "color: red"
-                }
-                return colors.get(val, "")
-            elif column == 'avg_similarity':
-                if val > self.conflict_threshold:
-                    return 'color: green'
-                elif val > 0:
-                    return 'color: green'
-                elif val > -self.conflict_threshold:
-                    return 'color: coral'
-                else:
-                    return 'color: red'
-            return ''
-
-        styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1) \
-            .format({
-                'interactions': '{:.0f}',
-                'conflicts': '{:.0f}',
-                'conflict_rate': '{:.3f}',
-                'avg_similarity': '{:.3f}'
-        })
-
-        display(styled_df)
-        save_df_to_csv(df, "loss_interaction_report.csv")
-
-    def plot_correlation_matrix(self, figsize=(10, 8)):
-        _, df = self.report()
-
-        # Create a square matrix of similarities
-        matrix_size = len(self.loss_names)
-        sim_matrix = np.ones((matrix_size, matrix_size))
-
-        for _, row in df.iterrows():
-            i = self.loss_names.index(row['loss1'])
-            j = self.loss_names.index(row['loss2'])
-            sim_matrix[i, j] = sim_matrix[j, i] = row['avg_similarity']
-
-        # Create a mask for the upper triangle
-        mask = np.triu(np.ones_like(sim_matrix, dtype=bool))
-
-        # Set up the matplotlib figure
-        fig, ax = plt.subplots(figsize=figsize)
-
-        # Create colormap
-        cmap = sns.diverging_palette(10, 220, as_cmap=True)
-
-        # Draw the heatmap with the mask and correct aspect ratio
-        sns.heatmap(sim_matrix, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0,
-                    square=True, linewidths=.5, cbar_kws={"shrink": .5}, annot=True,
-                    xticklabels=self.loss_names, yticklabels=self.loss_names)
-
-        # Add relationship annotations
-        for i in range(matrix_size):
-            for j in range(i + 1, matrix_size):
-                if not mask[i, j]:
-                    similarity = sim_matrix[i, j]
-                    if similarity > self.conflict_threshold:
-                        relationship = "SC"  # Strongly Cooperative
-                    elif similarity > 0:
-                        relationship = "WC"  # Weakly Cooperative
-                    elif similarity > -self.conflict_threshold:
-                        relationship = "WF"  # Weakly Conflicting
-                    else:
-                        relationship = "SF"  # Strongly Conflicting
-                    ax.text(j + 0.5, i + 0.5, relationship,
-                            ha='center', va='center', color='black',
-                            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-
-        plt.title("Loss Interaction Matrix")
-        plt.tight_layout()
-        save_figure("loss_interaction.pdf")
-        plt.show()
+    # Encode the samples
+    latents = model.encode(x_samples)
+    latent_pca = pca.transform(np.squeeze(x_samples.reshape(x_samples.shape[0], -1)))
+    targets_samples = targets_samples if targets_samples.ndim == 1 or targets_samples.shape[1] == 1 else targets_samples[:, 0]
+    ut.plot2d_analysis(latent_pca, targets_samples, title="PCA transform", labels_dict=labels_dict, legend=True)
+    ut.plot2d_analysis(latents, targets_samples, title="POLCA-Net latent", labels_dict=labels_dict, legend=True)

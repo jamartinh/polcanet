@@ -1,13 +1,19 @@
 from collections import defaultdict
+from itertools import combinations
+from typing import List, Dict, Tuple
 
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from IPython.core.display_functions import display
+from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from polcanet.reports import LossConflictAnalyzer
+from polcanet.utils import save_df_to_csv, save_figure
 
 
 class PolcaNetLoss(nn.Module):
@@ -28,7 +34,7 @@ class PolcaNetLoss(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, r=1., c=1., alpha=1., beta=1., gamma=1., class_labels=None):
+    def __init__(self, latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, class_labels=None):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
@@ -48,6 +54,7 @@ class PolcaNetLoss(nn.Module):
                            "ort": "Orthogonality Loss",
                            "com": "Center of Mass Loss",
                            "var": "Variance Reduction Loss",
+                           "iort": "Instance Orthogonality Loss",
                            }
         if class_labels is not None:
             self.loss_names["class"] = "Classification Loss"
@@ -70,166 +77,108 @@ class PolcaNetLoss(nn.Module):
         L_class: Classification loss
 
         """
+        batch_size = x.shape[0]
+        v = torch.var(z, dim=0)
+        w = F.normalize(v, p=1.0, dim=0)
 
         L_rec = F.mse_loss(r, x) if self.r != 0 else 0
-        L_ort = self.orthogonality_loss(z)
-        L_com, v = self.center_of_mass_loss(z)
+        L_ort = self.orthogonality_loss(z) if self.alpha != 0 and batch_size >= 16 else 0
+        L_com = self.center_of_mass_loss(self.a, w) if self.beta != 0 and batch_size >= 16 else 0
         L_var = v.mean() if self.gamma != 0 else 0
-        L_class = self.classification_loss(yp, target) if self.r != 0 else 0
+        L_class = self.classification_loss(yp, target) if self.c != 0 and self.class_labels is not None else 0
+        L_iort = self.instance_orthogonality_loss(z) if self.alpha != 0 and batch_size >= 16 else 0
 
         # Combine losses
         # Purpose: Balance all loss components for optimal latent representation
         # Method: Weighted sum of individual losses
-        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var
+        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + 0.01*self.alpha * L_iort
 
         if self.class_labels is not None:
-            return L, (L_rec, L_ort, L_com, L_var, L_class)
+            return L, (L_rec, L_ort, L_com, L_var, L_class, L_iort)
 
-        return L, (L_rec, L_ort, L_com, L_var)
+        return L, (L_rec, L_ort, L_com, L_var, L_iort)
 
-    def center_of_mass_loss(self, z):
+    @staticmethod
+    def center_of_mass_loss(x, w):
         """
         Center of mass loss
         Purpose: Concentrate information in earlier latent dimensions
         Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
         """
         # Compute and normalize variance and energy
-        v = torch.var(z, dim=0)
-        if self.beta == 0:
-            return 0, v
+        L_com = torch.mean(w * x, dim=0)
+        return L_com
 
-        w = F.normalize(v, p=1.0, dim=0)
-        L_com = torch.mean(w * self.a, dim=0)
-
-        return L_com, v
-
-    def classification_loss(self, yp, target):
+    @staticmethod
+    def classification_loss(yp, target):
         # If class labels are provided, compute classification loss
-        if self.class_labels is None:
-            return 0
-
         L_class = F.cross_entropy(yp, target)
         return L_class
 
-    def orthogonality_loss(self, z):
+    @staticmethod
+    def orthogonality_loss(z, eps=1e-8):
         """ Orthogonality loss
         Purpose: Encourage latent dimensions to be uncorrelated
         Method: Penalize off-diagonal elements of the cosine similarity matrix
         """
-        if self.alpha == 0:
-            return 0
+        # Add a little additive noise to z
+        z = z + 1e-6 * torch.randn_like(z)
 
-        Z = F.normalize(z, p=2, dim=0)
-        S = torch.mm(Z.t(), Z)
+        # Normalize z along the batch dimension (explicitly added)
+        z_norm = F.normalize(z, p=2, dim=0)
+
+        # Compute cosine similarity matrix
+        S = torch.mm(z_norm.t(), z_norm)
+        S = S.clamp(-1 + eps, 1 - eps)  # clamp to avoid NaNs and numerical instability
+
         idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
-        S_triu = S[idx0, idx1]
-        cos_sim = S_triu.square()
-        loss = torch.mean(cos_sim)
+        cos_sim = S[idx0, idx1]
 
-        return loss
+        loss = torch.mean(cos_sim.square())
+        if torch.isnan(loss):
+            print("NAN")
+            print("z shape:", z.shape)
+            print("z_norm shape:", z_norm.shape)
+            print("max min z_norm:", torch.max(z_norm), torch.min(z_norm))
+            print("max min S:", torch.max(S), torch.min(S))
+            print("max min S_triu:", torch.max(cos_sim), torch.min(cos_sim))
+            raise ValueError("Orthogonality loss is NaN")
 
-    def orthogonality_loss_kernel_tricked(self, z):
-        """
-        Orthogonality loss using the Gaussian RBF kernel trick
-        This is an attempt to use the kernel trick idea to compute the orthogonality loss
-        projected into a higher-dimensional space using the Gaussian RBF kernel so that it can capture
-        non-linear relationships between the latent dimensions pursuing thus Functional Independence.
-        """
-        if self.alpha == 0:
-            return 0
-        # Normalize the latent space (L2 normalization across the batch dimension)
-        Z = F.normalize(z, p=2, dim=0)
-
-        # Compute pairwise squared Euclidean distances
-        pairwise_dists = torch.cdist(Z.t(), Z.t(), p=2).pow(2)
-
-        # Apply the Gaussian RBF kernel
-        sigma_squared = torch.median(pairwise_dists)  # Heuristic for sigma^2
-        K = torch.exp(-pairwise_dists / (2 * sigma_squared))
-
-        # Extract the upper triangular part of the kernel matrix (excluding diagonal)
-        idx0, idx1 = torch.triu_indices(K.shape[0], K.shape[1], offset=1)
-        K_triu = K[idx0, idx1]
-
-        # Compute the loss as the mean of the off-diagonal kernel values
-        loss = torch.mean(K_triu.square())
         return loss
 
     @staticmethod
-    def random_projection(z, output_dim=None):
-        batch_dim, n_features = z.shape
-        if output_dim is None:
-            output_dim = n_features
-
-        # Step 1: Generate a random projection matrix
-        random_matrix = torch.randn(n_features, output_dim, device=z.device)
-
-        # Step 2: Project the data
-        z_proj = torch.matmul(z, random_matrix)
-
-        # # Step 3: Optionally normalize the rows to make them unit vectors
-        # z_proj = F.normalize(z_proj, p=2, dim=1)
-
-        return z_proj
-
-    def orthogonality_loss_pythagoras(self, z):
+    def instance_orthogonality_loss(z, eps=1e-8):
+        """ Instance orthogonality loss
+        Purpose: Encourage instances (row vectors) to be uncorrelated
+        Method: Penalize off-diagonal elements of the instance cosine similarity matrix
         """
-            Computes the orthogonality loss based on the Pythagorean property after normalizing
-            the feature vectors to unit vectors and scaling by 1/n, using squared difference.
+        # Add a little additive noise to z
+        z = z + 1e-6 * torch.randn_like(z)
 
-            Args:
-                z (torch.Tensor): A tensor of shape (batch_dim, feature_dim) representing
-                                  the feature vectors produced by the network for each sample
-                                  in the batch.
+        # Normalize z along the feature dimension (dim=1)
+        z_norm = F.normalize(z, p=2, dim=1)
 
-            Returns:
-                torch.Tensor: A scalar tensor representing the orthogonality loss.
+        # Compute instance cosine similarity matrix
+        S = torch.mm(z_norm, z_norm.t())
 
-            Theoretical Background:
-            ------------------------
-            For a set of vectors {z1, z2, ..., zn} in an n-dimensional space, when the vectors are normalized
-            to unit vectors and scaled by 1/n (where n is the feature dimension), the vectors are orthogonal if
-            and only if the following Pythagorean property holds:
+        # Apply clamp to avoid potential numerical instability
+        S = S.clamp(-1 + eps, 1 - eps)
 
-                ||(1/n) * (z1 + z2 + ... + zn)||^2 = 1
+        # Extract upper triangular part (excluding diagonal)
+        idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)
+        cos_sim = S[idx0, idx1]
 
-            where n is the feature dimension.
+        # Compute loss
+        loss = torch.mean(cos_sim.square())
 
-            This scaling simplifies the analysis because the expected norm of the sum of these scaled vectors
-            should be 1 when the vectors are orthogonal.
-
-            Implementation:
-            ----------------
-            Given a batch of feature vectors z of shape (batch_dim, feature_dim):
-
-            1. Normalize each feature vector to be a unit vector using F.normalize.
-            2. Scale the normalized vectors by 1/n.
-            3. Compute the sum of the scaled feature vectors for each sample in the batch: z_sum.
-            4. Compute the squared norm of the sum vector: ||z_sum||^2.
-            5. The loss is the squared difference between this squared norm and 1, averaged over the batch.
-
-            Example Usage:
-            --------------
-            z = torch.randn(32, 128)  # Batch of 32 samples, each with 128-dimensional features
-            loss = orthogonality_loss_with_scaling_squared(z)
-            """
-        if self.alpha == 0:
-            return torch.tensor([0], dtype=torch.float32, device=z.device)
-
-        z_unit = F.normalize(z, p=2, dim=1)  # Normalize each feature vector to be a unit vector
-        batch_size, n_features = z.size()
-
-        # Compute the squared magnitude of the sum
-        sum_squared_magnitude = torch.sum(torch.sum(z_unit, dim=0) ** 2)
-
-        # Compute the sum of squared magnitudes
-        sum_of_squared_magnitudes = torch.sum(torch.sum(z_unit ** 2, dim=1))
-
-        # The loss is the difference between these two values
-        # If features are orthogonal, this difference should be zero
-        loss = torch.abs(sum_squared_magnitude - sum_of_squared_magnitudes)
-
-        loss = loss / (batch_size * n_features)  # Normalize by total number of elements
+        if torch.isnan(loss):
+            print("NaN detected in instance orthogonality loss")
+            print("z shape:", z.shape)
+            print("z_norm shape:", z_norm.shape)
+            print("max min z_norm:", torch.max(z_norm), torch.min(z_norm))
+            print("max min S:", torch.max(S), torch.min(S))
+            print("max min cos_sim:", torch.max(cos_sim), torch.min(cos_sim))
+            raise ValueError("Instance orthogonality loss is NaN")
 
         return loss
 
@@ -240,14 +189,14 @@ class PolcaNet(nn.Module):
     that is used for Principal Latent Components Analysis (Polca).
 
     Attributes:
-        alpha (float): The weight for the cross-correlation loss.
-        beta (float): The weight for the center of mass loss.
-        gamma (float): The weight for the low variance loss.
         device (str): The device to run the encoder on ("cpu" or "cuda").
         encoder (nn.Module): The encoder module.
         decoder (nn.Module): The decoder module.
         latent_dim (int): The number of latent dimensions.
         class_labels (list): The list of class labels.
+        polca_loss (PolcaNetLoss): The loss function.
+        loss_analyzer (LossConflictAnalyzer): The loss conflict analyzer.
+
 
 
     Methods:
@@ -276,8 +225,18 @@ class PolcaNet(nn.Module):
 
     """
 
-    def __init__(self, encoder: nn.Module, decoder: nn.Module, latent_dim: int, r=1., c=1., alpha=1., beta=1., gamma=1.,
-                 class_labels=None):
+    def __init__(self,
+                 encoder: nn.Module,
+                 decoder: nn.Module,
+                 latent_dim: int,
+                 r=1.,
+                 c=1.,
+                 alpha=1e-2,
+                 beta=1e-2,
+                 gamma=1e-4,
+                 class_labels=None,
+                 analyzer_rate=0.1,
+                 ):
         """
         Initialize PolcaNet with the provided parameters.
         """
@@ -301,7 +260,8 @@ class PolcaNet(nn.Module):
             del self.decoder.encoder
 
         self.polca_loss = PolcaNetLoss(latent_dim, r, c, alpha, beta, gamma, class_labels)
-        self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:])
+        self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:],
+                                                  rate=analyzer_rate)
 
     def forward(self, x):
         z = self.encoder(x)
@@ -377,7 +337,8 @@ class PolcaNet(nn.Module):
         super().to(device)
         return self
 
-    def train_model(self, data, y=None, batch_size=None, num_epochs=100, report_freq=10, lr=1e-3, verbose=1):
+    def train_model(self, data, y=None, batch_size=None,
+                    num_epochs=100, report_freq=10, lr=1e-3, verbose=1, fine_tune=False):
         """
         Train the model using the given data.
         Usage:
@@ -386,13 +347,26 @@ class PolcaNet(nn.Module):
             >>> latent_dim = 32
             >>> model = PolcaNet(encoder, decoder, latent_dim=latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None
             >>> model.to_device("cuda")
-            >>> model.train_model(data, batch_size=256, num_epochs=10000, report_freq=20, lr=1e-3)
+            >>> model.train_model(data, batch_size=256, num_epochs=10000, report_freq=10, lr=1e-3)
 
             Or using a data loader:
             >>> data_loader = DataLoader(data, batch_size=256, shuffle=True)
-            >>> model.train_model(data_loader, num_epochs=10000, report_freq=20, lr=1e-3)
+            >>> model.train_model(data_loader, num_epochs=10000, report_freq=10, lr=1e-3)
 
         """
+        # Create the optimizer
+        if not fine_tune:
+            for param in self.parameters():
+                param.requires_grad = True
+            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+            self.loss_analyzer.enabled = True
+        else:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+            optimizer = torch.optim.Adam(self.decoder.parameters(), lr=lr)
+            self.loss_analyzer.enabled = False
+
+
 
         if self.class_labels is not None and y is None:
             raise ValueError("Class labels are provided, but no target values are provided in train_model")
@@ -400,55 +374,47 @@ class PolcaNet(nn.Module):
         if isinstance(data, (np.ndarray, torch.Tensor)):
             if batch_size is None:
                 raise ValueError("batch_size must be provided when data is in memory")
-            fitter = self.fitter_in_memory(data, y=y, batch_size=batch_size, num_epochs=num_epochs, lr=lr)
+            fitter = self.fitter_in_memory(optimizer, data, y=y, batch_size=batch_size, num_epochs=num_epochs)
         elif isinstance(data, DataLoader):
-            fitter = self.fitter_data_loader(data, num_epochs=num_epochs, lr=lr)
+            fitter = self.fitter_data_loader(optimizer, data, num_epochs=num_epochs)
         else:
             fitter = None
 
         assert fitter is not None, "Data must be either a DataLoader or a numpy array or torch tensor"
 
-        epoch_progress = tqdm(fitter, desc="epoch", leave=True, total=num_epochs, miniters=report_freq,
-                              disable=bool(not verbose))
+        epoch_progress = tqdm(fitter,
+                              desc="epoch", leave=True, total=num_epochs, mininterval=1.0, disable=bool(not verbose))
         metrics = {}
         epoch = 0
-        for epoch, metrics in epoch_progress:
-            if epoch % report_freq == 0:
-                epoch_progress.set_postfix(metrics)
+        try:
+            for epoch, metrics in epoch_progress:
+                if epoch % report_freq == 0:
+                    epoch_progress.set_postfix(metrics)
 
-        # pretty print final metrics stats
-        if bool(verbose):
-            print(f"Final metrics at epoch: {epoch + 1}")
-            for k, v in metrics.items():
-                print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
+            # pretty print final metrics stats
+            if bool(verbose):
+                print(f"Final metrics at epoch: {epoch + 1}")
+                for k, v in metrics.items():
+                    print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
+        except KeyboardInterrupt:
+            print("Training interrupted by user.")
+            return None
 
-        return metrics["loss"]
-
-    def fitter_data_loader(self, data_loader, num_epochs=100, lr=1e-3):
+    def fitter_data_loader(self,optimizer, data_loader, num_epochs=100):
         self.train()
-        # Create the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         for epoch in range(num_epochs):
             losses = defaultdict(list)
             for batch in data_loader:
+                x = batch[0].to(self.device)
                 if self.class_labels is not None:
-                    x = batch[0].to(self.device)
                     y = batch[1].to(self.device)
-                    # assure that the target is an integer tensor of 32 bits
+                    # assure that the target is an integer tensor
                     y = y.to(torch.int64)
                 else:
-                    # sometimes even if no targets in data loader the batch is a tuple
-                    if isinstance(batch, tuple):
-                        x = batch[0].to(self.device)
-                    else:
-                        x = batch.to(self.device)
                     y = None
 
-                if epoch % 20 == 0:
-                    loss, aux_losses = self.learn_step(x, optimizer, y=y, loss_analyzer=self.loss_analyzer)
-                else:
-                    loss, aux_losses = self.learn_step(x, optimizer, y=y)
+                loss, aux_losses = self.learn_step(x, optimizer, y=y)
                 losses["loss"].append(loss.item())
                 for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[idx].item())
@@ -456,7 +422,7 @@ class PolcaNet(nn.Module):
             metrics = {name: np.mean(losses[name]) for name in losses}
             yield epoch, metrics
 
-    def fitter_in_memory(self, data: np.ndarray | torch.Tensor, y=None, batch_size=512, num_epochs=100, lr=1e-3):
+    def fitter_in_memory(self, optimizer, data, y=None, batch_size=512, num_epochs=100):
         num_samples: int = len(data)
         self.train()
         torch_y = None
@@ -473,13 +439,12 @@ class PolcaNet(nn.Module):
             if self.class_labels is not None:
                 torch_y = y.to(self.device)
 
-        # Create the optimizer
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-
+        num_full_batches = num_samples // batch_size
+        adjusted_num_samples = num_full_batches * batch_size
         for epoch in range(num_epochs):
             losses = defaultdict(list)
-            indices = torch.randperm(num_samples)
-            for i in range(0, num_samples, batch_size):
+            indices = torch.randperm(num_samples)[:adjusted_num_samples]
+            for i in range(0, adjusted_num_samples, batch_size):
                 batch_indices = indices[i:i + batch_size]
                 x = torch_data[batch_indices]
                 if self.class_labels is not None:
@@ -487,10 +452,7 @@ class PolcaNet(nn.Module):
                 else:
                     targets = None
 
-                if epoch % 20 == 0:
-                    loss, aux_losses = self.learn_step(x, optimizer, y=targets, loss_analyzer=self.loss_analyzer)
-                else:
-                    loss, aux_losses = self.learn_step(x, optimizer, y=targets)
+                loss, aux_losses = self.learn_step(x, optimizer, y=targets)
                 losses["loss"].append(loss.item())
                 for aux_loss, name in enumerate(list(self.polca_loss.loss_names)[1:]):
                     losses[name].append(aux_losses[aux_loss].item())
@@ -498,16 +460,17 @@ class PolcaNet(nn.Module):
             metrics = {name: np.mean(losses[name]) for name in losses}
             yield epoch, metrics
 
-    def learn_step(self, x, optimizer, y=None, loss_analyzer=None):
+    def learn_step(self, x, optimizer, y=None):
         z, r = self.forward(x)
         yp = z[1] if self.class_labels is not None else None
         z = z[0] if self.class_labels is not None else z
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
+        torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=1.0)
 
-        # Analyze conflicts
-        if loss_analyzer is not None:
-            loss_analyzer.analyze([l for l in aux_losses if not isinstance(l, (int, float))])
-        # make the true optimization
+        # Analyze loss conflicts
+        if self.loss_analyzer is not None:
+            self.loss_analyzer.analyze([l for l in aux_losses if not isinstance(l, (int, float))])
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -534,7 +497,18 @@ class EncoderWrapper(nn.Module):
         self.encoder = encoder
         layers = []
         layer = nn.Linear(latent_dim, latent_dim)
-        torch.nn.init.orthogonal_(layer.weight)
+
+        # Apply orthogonal initialization
+        nn.init.orthogonal_(layer.weight)
+        # Apply the scaling to the weight matrix
+        # with torch.no_grad():
+        #     # Get the number of features (output dimension)
+        #     n_features, n_inputs = layer.weight.shape
+        #     # Scale the orthogonal matrix
+        #     scales = torch.linspace(1.0, 0.1, n_features)
+        #     scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
+        #     layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
+
         layers.append(layer)
         layer = nn.Softsign()
         layers.append(layer)
@@ -551,3 +525,197 @@ class EncoderWrapper(nn.Module):
             return z, self.classifier(z)
 
         return z
+
+
+class LossConflictAnalyzer:
+    def __init__(self, model: torch.nn.Module, loss_names: List[str] = None, rate=0.1, conflict_threshold: float = 0.1):
+        self.pairwise_similarities = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_interactions = {}
+        self.total_conflicts = 0
+        self.total_interactions = 0
+        self.model = model
+        self.loss_names = loss_names if loss_names else []
+        # rate of updates as a probability <1 if a random number is less than this rate the analysis will be done
+        # this is to limit the heavy computation of the analysis during training
+        self.rate = rate
+        self.conflict_threshold = conflict_threshold
+        self.reset_statistics()
+        self.enabled = True
+
+    def reset_statistics(self):
+        self.total_interactions = 0
+        self.total_conflicts = 0
+        self.pairwise_interactions = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_similarities = {}
+
+    def analyze(self, losses: List[torch.Tensor]) -> None:
+        if len(losses) != len(self.loss_names):
+            raise ValueError("Number of losses must match number of loss names")
+
+        # rate test
+        if not self.enabled or np.random.rand() > self.rate:
+            return
+
+        grads = self._compute_grad(losses)
+        self._analyze_conflicts(grads)
+
+    def _compute_grad(self, losses: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
+        grads = []
+        for loss in losses:
+            self.model.zero_grad()
+            loss.backward(retain_graph=True)
+            grad_dict = {name: param.grad.clone() for name, param in self.model.named_parameters() if
+                         param.grad is not None}
+            grads.append(grad_dict)
+        return grads
+
+    def _analyze_conflicts(self, grads: List[Dict[str, torch.Tensor]]) -> None:
+        num_losses = len(grads)
+
+        for (i, j) in combinations(range(num_losses), 2):
+            conflict_key = self._get_conflict_key(i, j)
+            g_i, g_j = grads[i], grads[j]
+
+            similarity = self._compute_similarity(g_i, g_j)
+
+            self.total_interactions += 1
+            self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
+            self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [similarity]
+
+            if similarity < -self.conflict_threshold:
+                self.total_conflicts += 1
+                self.pairwise_conflicts[conflict_key] = self.pairwise_conflicts.get(conflict_key, 0) + 1
+
+    @staticmethod
+    def _compute_similarity(grad1: Dict[str, torch.Tensor], grad2: Dict[str, torch.Tensor]) -> float:
+        dot_product = 0
+        norm1 = 0
+        norm2 = 0
+        for name in grad1.keys():
+            if name in grad2:
+                g1, g2 = grad1[name], grad2[name]
+                dot_product += torch.sum(g1 * g2).item()
+                norm1 += torch.sum(g1 * g1).item()
+                norm2 += torch.sum(g2 * g2).item()
+
+        if norm1 == 0 or norm2 == 0:
+            return 0
+        return dot_product / (np.sqrt(norm1) * np.sqrt(norm2))
+
+    def _get_conflict_key(self, i: int, j: int) -> Tuple[str, str]:
+        return self.loss_names[i], self.loss_names[j]
+
+    def report(self) -> Tuple[Dict[str, float], pd.DataFrame]:
+        overall_conflict_rate = self.total_conflicts / max(1, self.total_interactions)
+
+        report_dict = {'total_interactions': self.total_interactions, 'total_conflicts': self.total_conflicts,
+                       'overall_conflict_rate': overall_conflict_rate, 'pairwise_data': {}}
+
+        df_data = []
+
+        for (loss1, loss2), interactions in self.pairwise_interactions.items():
+            conflicts = self.pairwise_conflicts.get((loss1, loss2), 0)
+            similarities = self.pairwise_similarities[(loss1, loss2)]
+            avg_similarity = np.mean(similarities)
+            conflict_rate = conflicts / interactions if interactions > 0 else 0
+
+            if avg_similarity > self.conflict_threshold:
+                relationship = "Strongly Cooperative"
+            elif avg_similarity > 0:
+                relationship = "Weakly Cooperative"
+            elif avg_similarity > -self.conflict_threshold:
+                relationship = "Weakly Conflicting"
+            else:
+                relationship = "Strongly Conflicting"
+
+            report_dict['pairwise_data'][(loss1, loss2)] = {'interactions': interactions, 'conflicts': conflicts,
+                                                            'conflict_rate': conflict_rate,
+                                                            'avg_similarity': avg_similarity,
+                                                            'relationship': relationship}
+
+            df_data.append({'loss1': loss1, 'loss2': loss2, 'interactions': interactions, 'conflicts': conflicts,
+                            'conflict_rate': conflict_rate, 'avg_similarity': avg_similarity,
+                            'relationship': relationship})
+
+        df = pd.DataFrame(df_data)
+        df = df.sort_values('avg_similarity').reset_index(drop=True)
+
+        return report_dict, df
+
+    def print_report(self) -> None:
+        report_dict, df = self.report()
+        print(f"Loss Interaction Analysis Report:")
+        print(f"Total interactions: {report_dict['total_interactions']}")
+        print(f"Total conflicts: {report_dict['total_conflicts']}")
+        print(f"Overall conflict rate: {report_dict['overall_conflict_rate']:.4f}")
+        print(f"\nPairwise Statistics (sorted by similarity):")
+
+        def color_cells(val, column):
+            if column == 'relationship':
+                colors = {"Strongly Cooperative": "color: green", "Weakly Cooperative": "color: green",
+                          "Weakly Conflicting": "color: coral", "Strongly Conflicting": "color: red"}
+                return colors.get(val, "")
+            elif column == 'avg_similarity':
+                if val > self.conflict_threshold:
+                    return 'color: green'
+                elif val > 0:
+                    return 'color: green'
+                elif val > -self.conflict_threshold:
+                    return 'color: coral'
+                else:
+                    return 'color: red'
+            return ''
+
+        styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1).format(
+            {'interactions': '{:.0f}', 'conflicts': '{:.0f}', 'conflict_rate': '{:.3f}', 'avg_similarity': '{:.3f}'})
+
+        display(styled_df)
+        save_df_to_csv(df, "loss_interaction_report.csv")
+
+    def plot_correlation_matrix(self):
+        _, df = self.report()
+
+        # Create a square matrix of similarities
+        matrix_size = len(self.loss_names)
+        sim_matrix = np.ones((matrix_size, matrix_size))
+
+        for _, row in df.iterrows():
+            i = self.loss_names.index(row['loss1'])
+            j = self.loss_names.index(row['loss2'])
+            sim_matrix[i, j] = sim_matrix[j, i] = row['avg_similarity']
+
+        # Create a mask for the upper triangle
+        mask = np.triu(np.ones_like(sim_matrix, dtype=bool))
+
+        # Set up the matplotlib figure
+        fig, ax = plt.subplots()
+
+        # Create colormap
+        cmap = sns.diverging_palette(10, 220, as_cmap=True)
+
+        # Draw the heatmap with the mask and correct aspect ratio
+        sns.heatmap(sim_matrix, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0, square=True, linewidths=.5,
+                    cbar_kws={"shrink": .5}, annot=True, xticklabels=self.loss_names, yticklabels=self.loss_names)
+
+        # Add relationship annotations
+        for i in range(matrix_size):
+            for j in range(i + 1, matrix_size):
+                if not mask[i, j]:
+                    similarity = sim_matrix[i, j]
+                    if similarity > self.conflict_threshold:
+                        relationship = "SC"  # Strongly Cooperative
+                    elif similarity > 0:
+                        relationship = "WC"  # Weakly Cooperative
+                    elif similarity > -self.conflict_threshold:
+                        relationship = "WF"  # Weakly Conflicting
+                    else:
+                        relationship = "SF"  # Strongly Conflicting
+                    ax.text(j + 0.5, i + 0.5, relationship, ha='center', va='center', color='black',
+                            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+
+        plt.title("Loss Interaction Matrix")
+        plt.tight_layout()
+        save_figure("loss_interaction.pdf")
+        plt.show()

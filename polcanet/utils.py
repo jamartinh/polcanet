@@ -9,19 +9,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scienceplots
+import seaborn as sns
 import torch
 import torch.nn as nn
 from IPython.display import display
 from PIL import Image
+
 from matplotlib import pyplot as plt
-from scipy.stats import wilcoxon
 from skimage import exposure
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity, normalized_root_mse
 from sklearn import decomposition
 from sklearn.exceptions import DataConversionWarning, ConvergenceWarning, UndefinedMetricWarning
 from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
 from sklearn.metrics import accuracy_score, classification_report, matthews_corrcoef
-from sklearn.model_selection import train_test_split
+
+from sklearn.multioutput import MultiOutputClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import minmax_scale
 from sklearn.svm import SVC
@@ -53,11 +55,21 @@ plt.rcParams["figure.figsize"] = new_fig_size
 
 print(f"New default figure size: {new_fig_size}")
 
+my_style = {"text.usetex": False,
+            "figure.autolayout": False,
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.015,
+            "font.size": 14,
+            "axes.labelsize": 14,
+            "legend.fontsize": 12,
+            "xtick.labelsize": 12,
+            "ytick.labelsize": 12,
+            "axes.titlesize": 14, }
+plt.rcParams.update(my_style)
+
 SAVE_PATH = ""
 SAVE_FIG = False
 SAVE_FIG_PREFIX = ""
-saved_figures = Counter()
-
 
 def get_save_path():
     return SAVE_PATH
@@ -90,24 +102,15 @@ def set_save_fig(save_fig):
 
 def save_figure(name):
     if get_save_fig():
-        name = name.replace(".pdf", f"{get_fig_prefix()}_{saved_figures[name]}.pdf")
+        name = name.replace(".pdf", f"{get_fig_prefix()}.pdf")
         plt.savefig(get_save_path() / Path(name), dpi=300, bbox_inches="tight")
-        saved_figures[name] += 1
+
 
 
 def save_latex_table(df, name):
     if get_save_fig():
         latex_table = df.reset_index().to_latex(index=False,
-                                                # To not include the DataFrame index as a column in the table
-                                                # caption="Comparison of ML Model Performance Metrics",
-                                                # The caption to appear above the table in the LaTeX document
-                                                # label="tab:model_comparison",
-                                                # A label used for referencing the table within the LaTeX document
-                                                # position="htbp",
-                                                # The preferred positions where the table should be placed in the document ('here', 'top', 'bottom', 'page')
-                                                # column_format="|l|l|l|l|",  # The format of the columns: left-aligned with vertical lines between them
                                                 escape=False,
-                                                # Disable escaping LaTeX special characters in the DataFrame
                                                 float_format="{:0.4f}".format  # Formats floats to two decimal places
                                                 )
         with open(get_save_path() / Path(name), "w") as f:
@@ -122,6 +125,9 @@ def save_text(text, name):
 
 def save_df_to_csv(df, name):
     if get_save_fig():
+        name = name.replace(".csv", f"{get_fig_prefix()}.csv")
+        if ".csv" not in name:
+            name = name + "_" + get_fig_prefix() + ".csv"
         df.to_csv(get_save_path() / Path(name), index=True)
 
 
@@ -263,10 +269,7 @@ def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="
         reconstructed_list = [ae_reconstructed, pca_reconstructed]
     else:
         reconstructed_list = [images, ae_reconstructed, pca_reconstructed]
-    visualise_reconstructed_images(reconstructed_list=reconstructed_list,
-                                   title_list=title_list,
-                                   nrow=nrow,
-                                   cmap=cmap, )
+    visualise_reconstructed_images(reconstructed_list=reconstructed_list, title_list=title_list, nrow=nrow, cmap=cmap, )
 
 
 def calculate_metrics(original_images, reconstructed_images):
@@ -326,8 +329,7 @@ def get_images_metrics_table(original_images, reconstructed_sets):
 
     # Formatting the table
     # 'Normalized Mean Squared Error', 'Peak Signal-to-Noise Ratio', 'Structural Similarity Index'
-    metrics_table = metrics_table.round(
-        {'NMSE': 4, 'PSNR': 4, 'SSI': 4})
+    metrics_table = metrics_table.round({'NMSE': 4, 'PSNR': 4, 'SSI': 4})
 
     # Move the 'Set' column to the first place
     cols = ['Method'] + [col for col in metrics_table.columns if col != 'Method']
@@ -339,12 +341,20 @@ def get_images_metrics_table(original_images, reconstructed_sets):
 def get_pca(x, n_components=None, ax=None, title="", save_fig=None):
     total_pca = decomposition.PCA()
     total_pca.fit(np.squeeze(x.reshape(x.shape[0], -1)))
-    n_components = n_components or np.prod(x[0].shape)
+    # Compute cumulative explained variance ratio
+    cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
+    if n_components is not None and n_components < 1.0:
+        n_components = np.argmax(cumulative_variance_ratio >= n_components) + 1
+    else:
+        n_components = n_components or len(cumulative_variance_ratio)
+
+    if len(cumulative_variance_ratio) > 100:
+        n_components = max(n_components, 8)
+
+    n_components = int(n_components)
     pca = decomposition.PCA(n_components=n_components)
     pca.fit(np.squeeze(x.reshape(x.shape[0], -1)))
 
-    # Compute cumulative explained variance ratio
-    cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
     plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
     fig_name = save_fig or "pca_explained_variance.pdf"
     save_figure(fig_name)
@@ -396,7 +406,7 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
     ax.set_box_aspect(2 / 3)
 
 
-def image_metrics_table(experiment_data: dict, n_components=None,kind=None):
+def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
     tables = []
 
     for k, (images, model, pca) in experiment_data.items():
@@ -405,13 +415,16 @@ def image_metrics_table(experiment_data: dict, n_components=None,kind=None):
         if n_comps > pca.n_components:
             raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
 
-        latents = model.encode(images)
+        # Transform the data using POLCA-Net but using batch_size since data could be large
+        batch_size = min(1024, images.shape[0])
+        latents = np.concatenate([model.predict(images[i:i + batch_size], n_components=n_components)[0] for i in
+                                        range(0, len(images), batch_size)])
         ae_reconstructed = model.decode(latents[:, :n_comps])
         if ae_reconstructed.ndim != images.ndim:
             ae_reconstructed = ae_reconstructed.reshape(images.shape)
-        r_pca = ReducedPCA(pca, n_comps)
 
         # Reconstruct the images by PCA
+        r_pca = ReducedPCA(pca, n_comps)
         pca_latents = r_pca.transform(images.reshape(images.shape[0], -1))
         pca_reconstructed = r_pca.inverse_transform(pca_latents)
         pca_reconstructed = pca_reconstructed.reshape(images.shape)
@@ -421,17 +434,18 @@ def image_metrics_table(experiment_data: dict, n_components=None,kind=None):
         item = get_images_metrics_table(original_images, reconstructed_sets)
         tables.append(item)
 
+
     df_table = pd.concat(tables).set_index("Method")
     display(df_table)
     prefix = "_" + kind if kind else ""
-    save_latex_table(df_table, f"image_metrics{prefix}.tex")
+    # save_latex_table(df_table, f"image_metrics{prefix}.tex")
     save_df_to_csv(df_table, f"image_metrics{prefix}.csv")
     return df_table
 
 
 def make_classification_report(model, pca, X, y, n_components=None, kind=None):
     # Split the dataset into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    X_train, y_train=X, y
     n_components = n_components or pca.n_components
     if n_components > pca.n_components:
         raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
@@ -439,19 +453,11 @@ def make_classification_report(model, pca, X, y, n_components=None, kind=None):
     # Transform the data using PCA
     r_pca = ReducedPCA(pca, n_components)
 
-    if X.ndim > 2:
-        X_train_pca = r_pca.transform(X_train.reshape(X_train.shape[0], -1))
-        X_test_pca = r_pca.transform(X_test.reshape(X_test.shape[0], -1))
-    else:
-        X_train_pca = r_pca.transform(X_train)
-        X_test_pca = r_pca.transform(X_test)
+    X_train_pca = r_pca.transform(X_train.reshape(X_train.shape[0], -1) if X.ndim > 2 else X_train)
 
-    print("output shape from pca", X_train_pca.shape, X_test_pca.shape)
-
-    # Transform the data using POLCA-Net
-    X_train_polca = model.encode(X_train)[:, :n_components]
-    X_test_polca = model.encode(X_test)[:, :n_components]
-    print("output shape from POLCA", X_train_polca.shape, X_test_polca.shape)
+    # Transform the data using POLCA-Net but using batch_size since data could be large
+    batch_size = min(1024, X_train.shape[0])
+    X_train_polca = np.concatenate([model.predict(X_train[i:i + batch_size],n_components=n_components)[0] for i in range(0, len(X_train), batch_size)])
 
     # Define classifiers
     classifiers = {"Logistic Regression": LogisticRegression(solver="saga", n_jobs=10),
@@ -462,44 +468,49 @@ def make_classification_report(model, pca, X, y, n_components=None, kind=None):
 
     # Train and evaluate classifiers on both PCA and POLCA-Net transformed datasets
     results = []
-
+    multilabel = False
     for name, clf in classifiers.items():
         # Train on PCA
+        # check for multilabel multibinary classification meaning target has two dimensions
+        if y_train.ndim > 1 and y_train.shape[1] > 1:
+            clf = MultiOutputClassifier(clf, n_jobs=10)
+            multilabel = True
+
         clf.fit(minmax_scale(X_train_pca), y_train)
-        y_pred_pca = clf.predict(minmax_scale(X_test_pca))
-        accuracy_pca = accuracy_score(y_test, y_pred_pca)
-        matthews_correlation_pca = matthews_corrcoef(y_test, y_pred_pca)
-        report_pca = classification_report(y_test, y_pred_pca, output_dict=True)
-        # cm_pca = confusion_matrix(y_test, y_pred_pca)
+        y_pred_pca = clf.predict(minmax_scale(X_train_pca))
+        accuracy_pca = accuracy_score(y, y_pred_pca)
+        # set the average to weighted to handle the multilabel multiclass classification
+        if multilabel:
+            matthews_correlation_pca = 0
+            report_pca = classification_report(y, y_pred_pca, output_dict=True)
+        else:
+            matthews_correlation_pca = matthews_corrcoef(y, y_pred_pca)
+            report_pca = classification_report(y, y_pred_pca, output_dict=True)
 
         # Train on POLCA-Net
         clf.fit(minmax_scale(X_train_polca), y_train)
-        y_pred_polca = clf.predict(minmax_scale(X_test_polca))
-        accuracy_polca = accuracy_score(y_test, y_pred_polca)
-        matthews_correlation_polca = matthews_corrcoef(y_test, y_pred_polca)
-        report_polca = classification_report(y_test, y_pred_polca, output_dict=True)
-        # cm_polca = confusion_matrix(y_test, y_pred_polca)
+        y_pred_polca = clf.predict(minmax_scale(X_train_polca))
+        accuracy_polca = accuracy_score(y, y_pred_polca)
+        if multilabel:
+            matthews_correlation_polca = 0
+            report_polca = classification_report(y, y_pred_polca, output_dict=True)
+        else:
+            matthews_correlation_polca = matthews_corrcoef(y, y_pred_polca)
+            report_polca = classification_report(y, y_pred_polca, output_dict=True)
 
         # Append results
-        results.append({"Classifier": name,
-                        "Transformation": "PCA",
-                        "Accuracy": accuracy_pca,
-                        "Error rate": (1 - accuracy_pca) * 100,
-                        # "Precision": report_pca["weighted avg"]["precision"],
+        results.append({"Classifier": name, "Transformation": "PCA", "Accuracy": accuracy_pca,
+                        "Error rate": (1 - accuracy_pca) * 100,  # "Precision": report_pca["weighted avg"]["precision"],
                         # "Recall": report_pca["weighted avg"]["recall"],
-                        "Matthews": matthews_correlation_pca,
-                        "F1-Score": report_pca["weighted avg"]["f1-score"],
+                        "Matthews": matthews_correlation_pca, "F1-Score": report_pca["weighted avg"]["f1-score"],
                         # "Confusion Matrix": cm_pca,
                         })
 
-        results.append({"Classifier": name,
-                        "Transformation": "POLCA",
-                        "Accuracy": accuracy_polca,
+        results.append({"Classifier": name, "Transformation": "POLCA", "Accuracy": accuracy_polca,
                         "Error rate": (1 - accuracy_polca) * 100,
                         # "Precision": report_polca["weighted avg"]["precision"],
                         # "Recall": report_polca["weighted avg"]["recall"],
-                        "Matthews": matthews_correlation_polca,
-                        "F1-Score": report_polca["weighted avg"]["f1-score"],
+                        "Matthews": matthews_correlation_polca, "F1-Score": report_polca["weighted avg"]["f1-score"],
                         # "Confusion Matrix": cm_polca,
                         })
 
@@ -514,99 +525,155 @@ def make_classification_report(model, pca, X, y, n_components=None, kind=None):
 
     # Step 1: Pivot the DataFrame to separate PCA and POLCA-Net results
     df_metrics = df.pivot(index='Classifier', columns='Transformation',
-                          values=['Accuracy',
-                                  "Error rate",
-                                  # 'Precision',
+                          values=['Accuracy', "Error rate",  # 'Precision',
                                   # 'Recall',
-                                  'Matthews',
-                                  'F1-Score',
-                                  ])
-
-    # Step 2: Perform the Wilcoxon Signed-Rank Test and Calculate Median Differences
-    comparison_metrics = [
-            "Accuracy",
-            "Error rate",
-            # "Precision",
-            # "Recall",
-            "Matthews",
-            "F1-Score"]
-    wilcoxon_results = {}
-
-    for metric in comparison_metrics:
-        pca_result = df[df["Transformation"] == "PCA"][metric]
-        polca_result = df[df["Transformation"] == "POLCA"][metric]
-
-        # Perform Wilcoxon Signed-Rank test
-        stat, p_value = wilcoxon(pca_result.values, polca_result.values)
-
-        # Calculate median difference
-        median_diff = (pca_result - polca_result).median()
-
-        # Determine which method is better
-        if p_value < 0.05:
-            if median_diff > 0:
-                better_method = "PCA Better"
-            else:
-                better_method = "POLCA-Net Better"
-        else:
-            better_method = "No Significant Difference"
-
-        # Store the results
-        wilcoxon_results[metric] = {'Wilcoxon Test': stat, 'P-Value': p_value,
-                                    'Significant (p < 0.05)': f'Yes, {better_method} is better' if p_value < 0.05 else 'No better method'}
-
-    # Convert the results to a DataFrame
-    df_wilcoxon = pd.DataFrame(wilcoxon_results).T
+                                  'Matthews', 'F1-Score', ])
 
     # Display the DataFrames
     print("Performance Metrics DataFrame:")
     display(df_metrics)
     kind = "_" + kind if kind else ""
-    save_latex_table(df_metrics, f"classification_metrics{kind}.tex")
+    # save_latex_table(df_metrics, f"classification_metrics{kind}.tex")
     save_df_to_csv(df_metrics, f"classification_metrics{kind}.csv")
 
-    print("\nWilcoxon Signed-Rank Test Results DataFrame:")
-    display(df_wilcoxon)
-    save_latex_table(df_wilcoxon, f"wilcoxon_signed{kind}.tex")
-    return df_metrics, df_wilcoxon
+    return df_metrics, None
 
 
 def plot_train_images(x, title="", n=1, cmap="gray", save_fig=None):
     # Plot original and reconstructed signals for a sample
-    fig, axes = plt.subplots(1, n)
+    fig, axs = plt.subplots(1, n)
     fig.subplots_adjust(wspace=0.0)
-    im_list = list(range(n))
-    for i in im_list:
-        # if the images has channels last we should convert it to channels first
-        if x[i].ndim == 3 and x[i].shape[0] in {1, 3}:
-            _x = np.transpose(x[i], (1, 2, 0))
-        else:
-            _x = x[i]
-        # _x = normalize_array(_x, value_range=(0, 1), scale_each=False)
-        axes[i].imshow(_x, cmap=cmap)
-        if i == n // 2:
-            if title:
-                axes[i].set_title(f"{title}")
-        axes[i].axis("off")
+
+    for i, ax in enumerate(axs):
+        _x = np.transpose(x[i], (1, 2, 0)) if x[i].ndim == 3 and x[i].shape[0] in {1, 3} else x[i]
+        ax.imshow(_x, cmap=cmap)
+        if i == n // 2 and title:
+            ax.set_title(title)
+        ax.axis("off")
 
     fig_name = save_fig or "train_images.pdf"
     save_figure(fig_name)
     plt.show()
 
 
-def plot2d_analysis(X, y, title, legend=False):
-    fig = plt.figure(1)
-    ax = fig.add_subplot(111)
-    scatter = ax.scatter(X[:, 0], X[:, 1], label=y, cmap="tab10", c=y, s=10, rasterized=True, alpha=0.75)
-    ax.set_xlabel("component: 0")
-    ax.set_ylabel("component 1")
-    # ax.axis("equal")
+# def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
+#
+#     print(labels_dict)
+#     fig, ax = plt.subplots()
+#     # Map numeric labels to text labels
+#     y = np.squeeze(y)
+#     labels_array = np.array([labels_dict[key] for key in sorted(labels_dict.keys())])
+#     # Use the y array to index into the labels_array
+#     print(labels_array)
+#     y_labels = labels_array[y] if labels_dict is not None and y.ndim==1 else y
+#
+#     scatter = ax.scatter(X[:, 0], X[:, 1], label=y_labels, cmap="tab10", c=y, s=10, rasterized=True, alpha=0.75)
+#     ax.set_xlabel("component: 0")
+#     ax.set_ylabel("component: 1")
+#     # ax.axis("equal")
+#     if legend:
+#         plt.legend(*scatter.legend_elements(), title="Classes", loc='center left', bbox_to_anchor=(1, 0.5))
+#     ax.set_title(title)
+#     save_figure(f"{title}_2d_analysis.pdf")
+#     plt.show()
+#     return fig, ax
+
+
+def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
+    fig, ax = plt.subplots()
+
+    # Loop over each unique class to plot them separately
+    y = np.squeeze(y)
+    if y.ndim == 1:
+        unique_classes = np.unique(y)
+    else:
+        unique_classes = np.unique(y[:, 0])
+    for cls in unique_classes:
+        ix = np.where(y == cls)
+        ax.scatter(X[ix, 0], X[ix, 1], s=5, alpha=0.5, label=labels_dict[cls] if labels_dict else cls)
+
+    # Add axis labels and title
+    ax.set_xlabel("Component 0")
+    ax.set_ylabel("Component 1")
+    ax.set_title(title)
+
+    # Add legend if requested
     if legend:
-        legend1 = plt.legend(*scatter.legend_elements(), title="Classes", loc='center left', bbox_to_anchor=(1, 0.5))
-    plt.title(title)
+        ax.legend(title="Classes", loc='center left', bbox_to_anchor=(1, 0.5))
+
+    # Save the figure
     save_figure(f"{title}_2d_analysis.pdf")
+
+    # Show the plot
     plt.show()
+
     return fig, ax
+
+
+def plot_class_distribution(y, labels_dict,
+                            title: str = "Class Distribution", color_palette: str = "viridis",
+                            show_percentages: bool = True, sort_by: str = "value", log_scale: bool = False):
+    """
+    Plots an improved class distribution for the dataset.
+
+    Parameters:
+    - y: Array-like, the target labels for the dataset.
+    - labels_dict: Dictionary, mapping from label indices to class names.
+    - title: String, the title of the plot.
+    - figsize: Tuple, the size of the figure (width, height).
+    - color_palette: String, the name of the color palette to use.
+    - show_percentages: Boolean, whether to show percentages on bars.
+    - sort_by: String, how to sort the bars ('value', 'count', or None for original order).
+    - log_scale: Boolean, whether to use a logarithmic scale for the y-axis.
+    """
+    y = np.squeeze(y)
+    # Convert to pandas Series for easier manipulation
+    if not isinstance(y, pd.Series):
+        y = pd.Series(y)
+
+    # Count the number of instances for each class
+    class_counts = y.value_counts()
+    total_samples = len(y)
+
+    # Convert label indices to class names and calculate percentages
+    df = pd.DataFrame({'Class': [labels_dict[label] for label in class_counts.index], 'Count': class_counts.values,
+                       'Percentage': (class_counts.values / total_samples) * 100})
+
+    # Sort the dataframe
+    if sort_by == 'value':
+        df = df.sort_values('Class')
+    elif sort_by == 'count':
+        df = df.sort_values('Count', ascending=False)
+
+    # Set up the plot
+    plt.figure()
+    ax = sns.barplot(x='Class', y='Count', hue='Class', data=df, palette=color_palette, edgecolor='black', legend=False)
+
+    # Customize the plot
+    plt.title(title, fontsize=16, fontweight='bold')
+    plt.xlabel('Classes', fontsize=12)
+    plt.ylabel('Count', fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+
+    # Use log scale if specified
+    if log_scale:
+        ax.set_yscale('log')
+        plt.ylabel('Count (log scale)', fontsize=12)
+
+    # Annotate bars
+    for i, row in df.iterrows():
+        count = row['Count']
+        percentage = row['Percentage']
+        ax.text(i, count, f'{count}\n({percentage:.1f}%)', ha='center', va='bottom' if log_scale else 'top',
+                fontsize=10, fontweight='bold')
+
+    # Add a legend with total sample count
+    plt.text(0.95, 0.95, f'Total Samples: {total_samples}', transform=ax.transAxes, ha='right', va='top',
+             bbox=dict(facecolor='white', edgecolor='gray', alpha=0.8))
+
+    # Adjust layout and display
+    plt.tight_layout()
+    plt.show()
 
 
 class ExperimentInfoHandler:
@@ -620,17 +687,17 @@ class ExperimentInfoHandler:
 
     """
 
-    def __init__(self, name: str, description: str, random_seed: int):
+    def __init__(self, name: str, description: str, random_seed: int, experiment_dir: str = "experiments"):
         self.experiment_name = name
         self.experiment_description = description
         self.random_seed = random_seed
-        self.experiment_folder = Path.cwd() / f"experiments/{self.experiment_name}"
+        self.experiment_folder = Path.cwd() / f"{experiment_dir}/{self.experiment_name}"
         self.create_experiment_folder()
         self.add_experiment_info_to_folder()
         self.extra_args = dict()
 
     def create_experiment_folder(self):
-        self.experiment_folder.mkdir(exist_ok=True)
+        self.experiment_folder.mkdir(exist_ok=True, parents=True)
 
     def get_experiment_folder(self):
         return self.experiment_folder
