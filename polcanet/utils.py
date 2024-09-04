@@ -1,8 +1,6 @@
 import json
 import os
 import sys
-import warnings
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -11,38 +9,30 @@ import pandas as pd
 import scienceplots
 import seaborn as sns
 import torch
-import torch.nn as nn
 from IPython.display import display
 from PIL import Image
-
 from matplotlib import pyplot as plt
 from skimage import exposure
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity, normalized_root_mse
-from sklearn import decomposition
-from sklearn.exceptions import DataConversionWarning, ConvergenceWarning, UndefinedMetricWarning
-from sklearn.linear_model import LogisticRegression, Perceptron, RidgeClassifier
-from sklearn.metrics import accuracy_score, classification_report, matthews_corrcoef
+from sklearn.preprocessing import StandardScaler
 
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.preprocessing import minmax_scale
-from sklearn.svm import SVC
+import polcanet.mlutils
+from polcanet.mlutils import ReducedPCA, run_classification_pipeline
 
 # Filter out specific warnings
-warnings.filterwarnings("ignore", category=DataConversionWarning)
-warnings.filterwarnings("ignore", category=ConvergenceWarning)
-warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
-# Suppress NumPy's "RuntimeWarning: Mean of empty slice"
-warnings.filterwarnings("ignore", message="Mean of empty slice")
-# also for Sample size too small for normal approximation.
-warnings.filterwarnings("ignore", message="Sample size too small for normal approximation.")
+# warnings.filterwarnings("ignore", category=DataConversionWarning)
+# warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+# # Suppress NumPy's "RuntimeWarning: Mean of empty slice"
+# warnings.filterwarnings("ignore", message="Mean of empty slice")
+# # also for Sample size too small for normal approximation.
+# warnings.filterwarnings("ignore", message="Sample size too small for normal approximation.")
 
 sp_path = scienceplots.scienceplots_path
 plt.style.use(["science", "no-latex"])
 
 # Query the current default figure size
 current_fig_size = plt.rcParams["figure.figsize"]
-print(f"Current default figure size: {current_fig_size}")
+# print(f"Current default figure size: {current_fig_size}")
 
 # Define a scalar factor
 scalar_factor = 1.5
@@ -53,7 +43,7 @@ new_fig_size = [size * scalar_factor for size in current_fig_size]
 # Set the new default figure size
 plt.rcParams["figure.figsize"] = new_fig_size
 
-print(f"New default figure size: {new_fig_size}")
+# print(f"New default figure size: {new_fig_size}")
 
 my_style = {"text.usetex": False,
             "figure.autolayout": False,
@@ -70,6 +60,7 @@ plt.rcParams.update(my_style)
 SAVE_PATH = ""
 SAVE_FIG = False
 SAVE_FIG_PREFIX = ""
+
 
 def get_save_path():
     return SAVE_PATH
@@ -104,7 +95,6 @@ def save_figure(name):
     if get_save_fig():
         name = name.replace(".pdf", f"{get_fig_prefix()}.pdf")
         plt.savefig(get_save_path() / Path(name), dpi=300, bbox_inches="tight")
-
 
 
 def save_latex_table(df, name):
@@ -247,7 +237,7 @@ def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", 
     plt.show()
 
 
-def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="viridis", nrow=5, no_title=False,
+def plot_reconstruction_comparison(model, pca, images, n_components=None,mask=None, cmap="viridis", nrow=5, no_title=False,
                                    show_only_reconstruction=False):
     n_components = n_components or pca.n_components
 
@@ -255,7 +245,7 @@ def plot_reconstruction_comparison(model, pca, images, n_components=None, cmap="
         raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
 
     latents = model.encode(images)
-    ae_reconstructed = model.decode(latents[:, :n_components])
+    ae_reconstructed = model.decode(latents[:, :n_components], mask=mask)
     if ae_reconstructed.ndim != images.ndim:
         ae_reconstructed = ae_reconstructed.reshape(images.shape)
     r_pca = ReducedPCA(pca, n_components)
@@ -338,55 +328,15 @@ def get_images_metrics_table(original_images, reconstructed_sets):
     return metrics_table
 
 
-def get_pca(x, n_components=None, ax=None, title="", save_fig=None):
-    total_pca = decomposition.PCA()
-    total_pca.fit(np.squeeze(x.reshape(x.shape[0], -1)))
-    # Compute cumulative explained variance ratio
-    cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
-    if n_components is not None and n_components < 1.0:
-        n_components = np.argmax(cumulative_variance_ratio >= n_components) + 1
-    else:
-        n_components = n_components or len(cumulative_variance_ratio)
-
-    if len(cumulative_variance_ratio) > 100:
-        n_components = max(n_components, 8)
-
-    n_components = int(n_components)
-    pca = decomposition.PCA(n_components=n_components)
-    pca.fit(np.squeeze(x.reshape(x.shape[0], -1)))
-
-    plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
-    fig_name = save_fig or "pca_explained_variance.pdf"
-    save_figure(fig_name)
-    plt.show()
-
-    return pca
-
-
-def get_pca_torch(x: np.ndarray, n_components=None, ax=None, title="", save_fig=None, device="cuda"):
-    total_pca = TorchPCA(device=device)
-    total_pca.fit(x)
-    n_components = n_components or x.shape[1]
-    pca = TorchPCA(n_components=n_components, device=device)
-    pca.fit(x)
-
-    # Compute cumulative explained variance ratio
-    cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
-    plot_components_cdf(cumulative_variance_ratio, n_components, title, ax)
-    fig_name = save_fig or "pca_explained_variance.pdf"
-    save_figure(fig_name)
-
-    return pca
-
-
-def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=None):
+def plot_components_cdf(pca, n_components, title="", save_fig=None):
     # Number of components needed for 90% and 95% explained variance
+    # Compute cumulative explained variance ratio
+    cumulative_variance_ratio = np.cumsum(pca.explained_variance_ratio_)
     total_components = len(cumulative_variance_ratio)
     components_90 = np.argmax(cumulative_variance_ratio >= 0.9) + 1
     components_95 = np.argmax(cumulative_variance_ratio >= 0.95) + 1
-    # If ax is not provided, create a new figure and axis
-    if ax is None:
-        fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
+
+    fig, ax = plt.subplots(layout='constrained')
     ax.plot(range(1, n_components + 1), cumulative_variance_ratio[:n_components], color="black",
             label="explained variance", lw=1)
     ax.set_xlabel(f'Number of components: {n_components} of {total_components}')
@@ -399,11 +349,11 @@ def plot_components_cdf(cumulative_variance_ratio, n_components, title="", ax=No
     ax.axhline(y=0.95, color='g', linestyle='--', lw=1,
                label=f"95% by {(100 * components_95 / total_components):.1f}% ({components_95}) components")
     ax.legend()
-    # set x-axis from 1 to n_components
-    # ax.set_xlim(1, n_components)
-    # set y-axis from 0 to 1
     ax.set_ylim(0, 1)
     ax.set_box_aspect(2 / 3)
+    fig_name = save_fig or "pca_explained_variance.pdf"
+    save_figure(fig_name)
+    plt.show()
 
 
 def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
@@ -418,7 +368,7 @@ def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
         # Transform the data using POLCA-Net but using batch_size since data could be large
         batch_size = min(1024, images.shape[0])
         latents = np.concatenate([model.predict(images[i:i + batch_size], n_components=n_components)[0] for i in
-                                        range(0, len(images), batch_size)])
+                                  range(0, len(images), batch_size)])
         ae_reconstructed = model.decode(latents[:, :n_comps])
         if ae_reconstructed.ndim != images.ndim:
             ae_reconstructed = ae_reconstructed.reshape(images.shape)
@@ -434,109 +384,12 @@ def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
         item = get_images_metrics_table(original_images, reconstructed_sets)
         tables.append(item)
 
-
     df_table = pd.concat(tables).set_index("Method")
     display(df_table)
     prefix = "_" + kind if kind else ""
     # save_latex_table(df_table, f"image_metrics{prefix}.tex")
     save_df_to_csv(df_table, f"image_metrics{prefix}.csv")
     return df_table
-
-
-def make_classification_report(model, pca, X, y, n_components=None, kind=None):
-    # Split the dataset into training and testing sets
-    X_train, y_train=X, y
-    n_components = n_components or pca.n_components
-    if n_components > pca.n_components:
-        raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
-
-    # Transform the data using PCA
-    r_pca = ReducedPCA(pca, n_components)
-
-    X_train_pca = r_pca.transform(X_train.reshape(X_train.shape[0], -1) if X.ndim > 2 else X_train)
-
-    # Transform the data using POLCA-Net but using batch_size since data could be large
-    batch_size = min(1024, X_train.shape[0])
-    X_train_polca = np.concatenate([model.predict(X_train[i:i + batch_size],n_components=n_components)[0] for i in range(0, len(X_train), batch_size)])
-
-    # Define classifiers
-    classifiers = {"Logistic Regression": LogisticRegression(solver="saga", n_jobs=10),
-                   "Gaussian Naive Bayes": GaussianNB(),
-                   "Linear SVM": SVC(kernel="linear", probability=False),
-                   "Ridge Classifier": RidgeClassifier(),
-                   "Perceptron": Perceptron(n_jobs=10), }
-
-    # Train and evaluate classifiers on both PCA and POLCA-Net transformed datasets
-    results = []
-    multilabel = False
-    for name, clf in classifiers.items():
-        # Train on PCA
-        # check for multilabel multibinary classification meaning target has two dimensions
-        if y_train.ndim > 1 and y_train.shape[1] > 1:
-            clf = MultiOutputClassifier(clf, n_jobs=10)
-            multilabel = True
-
-        clf.fit(minmax_scale(X_train_pca), y_train)
-        y_pred_pca = clf.predict(minmax_scale(X_train_pca))
-        accuracy_pca = accuracy_score(y, y_pred_pca)
-        # set the average to weighted to handle the multilabel multiclass classification
-        if multilabel:
-            matthews_correlation_pca = 0
-            report_pca = classification_report(y, y_pred_pca, output_dict=True)
-        else:
-            matthews_correlation_pca = matthews_corrcoef(y, y_pred_pca)
-            report_pca = classification_report(y, y_pred_pca, output_dict=True)
-
-        # Train on POLCA-Net
-        clf.fit(minmax_scale(X_train_polca), y_train)
-        y_pred_polca = clf.predict(minmax_scale(X_train_polca))
-        accuracy_polca = accuracy_score(y, y_pred_polca)
-        if multilabel:
-            matthews_correlation_polca = 0
-            report_polca = classification_report(y, y_pred_polca, output_dict=True)
-        else:
-            matthews_correlation_polca = matthews_corrcoef(y, y_pred_polca)
-            report_polca = classification_report(y, y_pred_polca, output_dict=True)
-
-        # Append results
-        results.append({"Classifier": name, "Transformation": "PCA", "Accuracy": accuracy_pca,
-                        "Error rate": (1 - accuracy_pca) * 100,  # "Precision": report_pca["weighted avg"]["precision"],
-                        # "Recall": report_pca["weighted avg"]["recall"],
-                        "Matthews": matthews_correlation_pca, "F1-Score": report_pca["weighted avg"]["f1-score"],
-                        # "Confusion Matrix": cm_pca,
-                        })
-
-        results.append({"Classifier": name, "Transformation": "POLCA", "Accuracy": accuracy_polca,
-                        "Error rate": (1 - accuracy_polca) * 100,
-                        # "Precision": report_polca["weighted avg"]["precision"],
-                        # "Recall": report_polca["weighted avg"]["recall"],
-                        "Matthews": matthews_correlation_polca, "F1-Score": report_polca["weighted avg"]["f1-score"],
-                        # "Confusion Matrix": cm_polca,
-                        })
-
-    # Create a DataFrame to display the results
-    results_df = pd.DataFrame(results)
-
-    # Display the main metrics table
-    main_metrics_df = results_df  # .drop(columns=["Confusion Matrix"])
-    main_metrics_df = main_metrics_df.round(2)
-
-    df = main_metrics_df
-
-    # Step 1: Pivot the DataFrame to separate PCA and POLCA-Net results
-    df_metrics = df.pivot(index='Classifier', columns='Transformation',
-                          values=['Accuracy', "Error rate",  # 'Precision',
-                                  # 'Recall',
-                                  'Matthews', 'F1-Score', ])
-
-    # Display the DataFrames
-    print("Performance Metrics DataFrame:")
-    display(df_metrics)
-    kind = "_" + kind if kind else ""
-    # save_latex_table(df_metrics, f"classification_metrics{kind}.tex")
-    save_df_to_csv(df_metrics, f"classification_metrics{kind}.csv")
-
-    return df_metrics, None
 
 
 def plot_train_images(x, title="", n=1, cmap="gray", save_fig=None):
@@ -588,9 +441,11 @@ def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
         unique_classes = np.unique(y)
     else:
         unique_classes = np.unique(y[:, 0])
+
+
     for cls in unique_classes:
         ix = np.where(y == cls)
-        ax.scatter(X[ix, 0], X[ix, 1], s=5, alpha=0.5, label=labels_dict[cls] if labels_dict else cls)
+        ax.scatter(X[ix, 0], X[ix, 1],s=5, alpha=0.25, label=labels_dict[cls] if labels_dict else cls)
 
     # Add axis labels and title
     ax.set_xlabel("Component 0")
@@ -727,138 +582,6 @@ class ExperimentInfoHandler:
         info.update(self.extra_args)
         with open(self.experiment_folder / "experiment_info.json", "w") as f:
             json.dump(info, f, indent=4)
-
-
-class TorchPCA(nn.Module):
-    def __init__(self, n_components=None, center=True, device=None):
-        """
-        PCA implementation using PyTorch, with NumPy interface.
-
-        Parameters:
-        - n_components (int or None): Number of components to keep.
-                                      If None, all components are kept.
-        - center (bool): Whether to center the data before applying PCA.
-        - device (str or torch.device or None): The device to run computations on. If None, defaults to 'cpu'.
-        """
-        super(TorchPCA, self).__init__()
-        self.n_components = n_components
-        self.center = center
-        self.device = device if device is not None else torch.device('cpu')
-        self.mean = None
-        self.components_ = None
-        self.explained_variance_ = None
-        self.explained_variance_ratio_ = None
-
-    def fit(self, X):
-        """
-        Fit the PCA model to X.
-
-        Parameters:
-        - X (np.ndarray): The data to fit, of shape (n_samples, n_features).
-        """
-        X = torch.tensor(X, dtype=torch.float32).to(self.device)
-
-        if self.center:
-            self.mean = X.mean(dim=0)
-            X = X - self.mean
-
-        # Perform PCA using torch.pca_lowrank
-        U, S, V = torch.pca_lowrank(X, q=self.n_components)
-
-        self.components_ = V  # Principal components
-        explained_variance = (S ** 2) / (X.shape[0] - 1)
-        self.explained_variance_ = explained_variance
-        total_variance = explained_variance.sum()
-        self.explained_variance_ratio_ = explained_variance / total_variance
-
-        # Convert back to numpy arrays for the external interface
-        self.mean = self.mean.cpu().numpy() if self.mean is not None else None
-        self.components_ = self.components_.cpu().numpy()
-        self.explained_variance_ = self.explained_variance_.cpu().numpy()
-        self.explained_variance_ratio_ = self.explained_variance_ratio_.cpu().numpy()
-
-    def transform(self, X):
-        """
-        Apply the dimensionality reduction on X.
-
-        Parameters:
-        - X (np.ndarray): New data to project, of shape (n_samples, n_features).
-
-        Returns:
-        - X_transformed (np.ndarray): The data in the principal component space.
-        """
-        X = torch.tensor(X, dtype=torch.float32).to(self.device)
-        if self.center and self.mean is not None:
-            X = X - torch.tensor(self.mean, dtype=torch.float32).to(self.device)
-        X_transformed = torch.matmul(X, torch.tensor(self.components_, dtype=torch.float32).to(self.device))
-        return X_transformed.cpu().numpy()
-
-    def fit_transform(self, X):
-        """
-        Fit the model with X and apply the dimensionality reduction on X.
-
-        Parameters:
-        - X (np.ndarray): The data to fit and transform, of shape (n_samples, n_features).
-
-        Returns:
-        - X_transformed (np.ndarray): The data in the principal component space.
-        """
-        self.fit(X)
-        return self.transform(X)
-
-    def inverse_transform(self, X_transformed):
-        """
-        Transform data back to its original space.
-
-        Parameters:
-        - X_transformed (np.ndarray): Data in the principal component space, of shape (n_samples, n_components).
-
-        Returns:
-        - X_original (np.ndarray): The data transformed back to the original space.
-        """
-        X_transformed = torch.tensor(X_transformed, dtype=torch.float32).to(self.device)
-        X_original = torch.matmul(X_transformed,
-                                  torch.tensor(self.components_, dtype=torch.float32).t().to(self.device))
-        if self.center and self.mean is not None:
-            X_original = X_original + torch.tensor(self.mean, dtype=torch.float32).to(self.device)
-        return X_original.cpu().numpy()
-
-
-class ReducedPCA:
-    def __init__(self, pca, n_components):
-        """
-        Initialize ReducedPCA with a fitted PCA object and desired number of components.
-
-        :param pca: Fitted PCA object
-        :param n_components: Number of components to use (must be <= pca.n_components_)
-        """
-        if n_components > pca.n_components_:
-            raise ValueError("n_components must be <= pca.n_components_")
-
-        self.n_components = n_components
-        self.components_ = pca.components_[:n_components]
-        self.mean_ = pca.mean_
-        self.explained_variance_ = pca.explained_variance_[:n_components]
-        self.explained_variance_ratio_ = pca.explained_variance_ratio_[:n_components]
-
-    def transform(self, X):
-        """
-        Apply dimensionality reduction to X using the reduced number of components.
-
-        :param X: Array-like of shape (n_samples, n_features)
-        :return: Array-like of shape (n_samples, n_components)
-        """
-        X_centered = X - self.mean_
-        return np.dot(X_centered, self.components_.T)
-
-    def inverse_transform(self, X_transformed):
-        """
-        Transform data back to its original space using the reduced number of components.
-
-        :param X_transformed: Array-like of shape (n_samples, n_components)
-        :return: Array-like of shape (n_samples, n_features)
-        """
-        return np.dot(X_transformed, self.components_) + self.mean_
 
 
 def generate_2d_sinusoidal_data(N, M, num_samples):
@@ -1009,3 +732,63 @@ def calculate_compressed_size_and_ratio(initial_size: int, compression_rate: flo
     compression_ratio_str = f"{compression_ratio:.1f}:1"
 
     return compressed_size, compression_ratio_str
+
+
+def make_classification_report(model, pca, X, y, X_test, y_test, n_components=None, kind=None):
+    # Split the dataset into training and testing sets
+    X_train, y_train = X, np.squeeze(y)
+    X_test, y_test = X_test, np.squeeze(y_test)
+    n_components = n_components or pca.n_components
+    if n_components > pca.n_components:
+        raise ValueError(f"Number of components should be less than or equal to {pca.n_components}")
+
+    # Transform the data using PCA
+    r_pca = ReducedPCA(pca, n_components)
+
+    X_train_pca = r_pca.transform(X_train.reshape(X_train.shape[0], -1) if X.ndim > 2 else X_train)
+    X_test_pca = r_pca.transform(X_test.reshape(X_test.shape[0], -1) if X_test.ndim > 2 else X_test)
+
+    # Transform the data using POLCA-Net but using batch_size since data could be large
+    min_batch_size = 2048  # adjust this value to fit the memory
+    batch_size = min(min_batch_size, X_train.shape[0])
+    X_train_polca = np.concatenate([model.predict(X_train[i:i + batch_size], n_components=n_components)[0] for i in
+                                    range(0, len(X_train), batch_size)])
+    X_test_polca = np.concatenate([model.predict(X_test[i:i + batch_size], n_components=n_components)[0] for i in
+                                   range(0, len(X_test), batch_size)])
+
+    # Standardize all data splits using sklearn StandardScaler for each data and method
+    pca_scaler = StandardScaler()
+    pca_scaler.fit(X_train_pca)
+    X_train_pca = pca_scaler.transform(X_train_pca)
+    X_test_pca = pca_scaler.transform(X_test_pca)
+
+    polca_scaler = StandardScaler()
+    polca_scaler.fit(X_train_polca)
+    X_train_polca = polca_scaler.transform(X_train_polca)
+    X_test_polca = polca_scaler.transform(X_test_polca)
+
+    # Run the classification pipeline
+    results = run_classification_pipeline(X_train_pca, X_test_pca, X_train_polca, X_test_polca, y_train, y_test)
+    # Create a DataFrame to display the results
+    df = results
+
+    df_metrics = df.pivot(index=['Classifier', "Split"], columns='Transformation',
+                          values=['Accuracy',
+                                  'Precision',
+                                  'Recall',
+                                  'F1-Score', ])
+
+    # Display the DataFrames
+    print("Classification Performance Metrics DataFrame:")
+    display(df_metrics.round(2))
+    kind = "_" + kind if kind else ""
+    save_df_to_csv(df_metrics, f"classification_metrics{kind}.csv")
+
+    return df_metrics, None
+
+
+def perform_pca(X, n_components, title="PCA"):
+    """Perform PCA on the training dataset."""
+    total_pca, pca = polcanet.mlutils.get_pca(X, n_components=n_components)
+    plot_components_cdf(total_pca, title=title, n_components=n_components)
+    return pca

@@ -5,19 +5,21 @@ import os
 import random
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import medmnist
 import numpy as np
 import torch
 import torchinfo
 from medmnist import INFO
 from torch.utils.data import DataLoader, TensorDataset
-from torchvision.datasets import MNIST, FashionMNIST, CIFAR10
+from torchvision.datasets import MNIST, FashionMNIST
 
+import polcanet.mlutils
 import polcanet.reports as report
+import polcanet.utils
 import polcanet.utils as ut
 from polcanet import PolcaNet
 from polcanet.aencoders import ConvEncoder, LinearDecoder
+from polcanet.utils import perform_pca
 
 # Redefine plt.show() to do nothing
 # plt.show = lambda: None
@@ -37,15 +39,16 @@ def train(params):
 
     batch_size, epoch_list, lr_schedule = process_parameters_and_defaults(X, params)
 
-    pca = perform_pca(X, params)
+    pca = perform_pca(X, n_components=params.n_components, title=f"PCA on {params.name} dataset")
 
     model = create_polca_model(X[0].shape, pca.n_components, labels, params)
     model.to(params.device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr_schedule[0], weight_decay=1e-1)
 
     if params.use_dataloader:
-        train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params)
+        train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params.params, optimizer=optimizer)
     else:
-        train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list)
+        train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer=optimizer)
 
     analyze_and_report_results(X, X_test, y, y_test, model, pca, params)
 
@@ -91,7 +94,7 @@ def prepare_data(params):
     X_test = np.array(params.test_set.data, dtype=np.float32).squeeze()
     y = params.train_set.targets
     y_test = params.test_set.targets
-    labels = np.unique(y) if params.with_labels else None
+    labels = list(params.labels_dict.keys()) if params.with_labels and params.labels_dict else None
 
     print(f"Data range: [{X.min()}, {X.max()}]")
     print(f"Train dataset: {X.shape}, Test dataset: {X_test.shape}")
@@ -133,14 +136,6 @@ def process_parameters_and_defaults(dataset, params):
     return batch_size, epoch_list, lr_schedule
 
 
-def perform_pca(X, params):
-    """Perform PCA on the training dataset."""
-    fig, axs = plt.subplots(1, 1, sharex=True, sharey=True, layout='constrained')
-    pca = ut.get_pca(X, n_components=params.n_components, title=f"PCA on {params.name}", ax=axs)
-
-    return pca
-
-
 def create_polca_model(input_dim, latent_dim, labels, params):
     """Create and return the POLCA-Net model."""
     encoder = ConvEncoder(
@@ -150,29 +145,44 @@ def create_polca_model(input_dim, latent_dim, labels, params):
         initial_channels=16 * params.n_channels,
         growth_factor=2,
         num_layers=5,
-        act_fn=torch.nn.SiLU,
-        size=max(max(input_dim), 32),
+        act_fn=torch.nn.GELU,
+        size=max(max(input_dim), 28),
     )
 
     decoder = LinearDecoder(
         latent_dim=latent_dim,
         input_dim=input_dim,
-        hidden_dim=5 * 256 if not params.linear else 8 * 256,
+        hidden_dim=4 * 256 if not params.linear else 10 * 256,
         num_layers=4 if not params.linear else 2,
-        act_fn=torch.nn.SiLU if not params.linear else None,
+        act_fn=torch.nn.GELU if not params.linear else None,
         bias=False,
         output_act_fn=None,
     )
+
+    r = 1.0
+    c = 0.0
+    alpha = 1e-2
+    beta = 1e-2
+    gamma = 1e-6
+    delta = 0
+    if params.with_labels:
+        r = 1.0
+        c = 1e-2
+        alpha = 1
+        beta = 1
+        gamma = 1e-6
+        delta = 0
 
     model = PolcaNet(
         encoder=encoder,
         decoder=decoder,
         latent_dim=latent_dim,
-        r=1.0,  # reconstruction weight
-        c=1.0,  # classification weight
-        alpha=1e-2,  # orthogonality loss weight
-        beta=1e-2,  # variance sorting loss weight
-        gamma=1e-5,  # variance reduction loss weight
+        r=r,  # reconstruction weight
+        c=c,  # classification weight
+        alpha=alpha,  # orthogonality loss weight
+        beta=beta,  # variance sorting loss weight
+        gamma=gamma,  # variance reduction loss weight
+        delta=delta,  # instance orthogonality loss weight  *experimental*
         class_labels=labels,  # class labels for supervised in case labels is not None
     )
 
@@ -188,7 +198,7 @@ def create_polca_model(input_dim, latent_dim, labels, params):
     return model
 
 
-def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params):
+def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params, optimizer):
     """Train the model using DataLoader."""
     x_torch = torch.tensor(X, dtype=torch.float32)
     y_torch = torch.tensor(y, dtype=torch.int64) if params.with_labels else None
@@ -197,13 +207,20 @@ def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, para
                                    num_workers=4, drop_last=True)
 
     for lr, epochs in zip(lr_schedule, epoch_list):
-        model.train_model(train_data_loader, num_epochs=epochs,lr=lr)
+        # Update learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 0.01
+        model.train_model(train_data_loader, num_epochs=epochs, lr=lr, optimizer=optimizer)
 
 
-def train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list):
+def train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer):
     """Train the model using in-memory data."""
     for lr, epochs in zip(lr_schedule, epoch_list):
-        model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=epochs, lr=lr)
+        # Update learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+        model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=epochs, lr=lr, optimizer=optimizer)
 
 
 def analyze_and_report_results(X, X_test, y, y_test, model, pca, params):
@@ -213,8 +230,7 @@ def analyze_and_report_results(X, X_test, y, y_test, model, pca, params):
     model.loss_analyzer.print_report()
     model.loss_analyzer.plot_correlation_matrix()
 
-    for prefix, data, targets in [("train", X,  y), ("test", X_test,  y_test)]:
-
+    for prefix, data, targets in [("train", X, y), ("test", X_test, y_test)]:
         ut.set_fig_prefix(prefix)
         # report.analyze_reconstruction_error(model, data)
         images = data[:25]
@@ -228,8 +244,8 @@ def analyze_and_report_results(X, X_test, y, y_test, model, pca, params):
 
         report.embedding_analysis(model, pca, data, targets, params.labels_dict)
 
-        if len(np.unique(y)) > 1:
-            ut.make_classification_report(model, pca, data, targets, n_components=pca.n_components)
+    if len(np.unique(y)) > 1:
+        polcanet.utils.make_classification_report(model, pca, X, y, X_test, y_test, n_components=pca.n_components)
 
 
 def cleanup_resources(model):
@@ -324,6 +340,8 @@ def train_on_datasets(params):
         params.train_set = train_set
         params.test_set = test_set
         params.labels_dict = dataset_dict_labels[name]
+        if not params.labels_dict:
+            params.with_labels = False
 
         train(params)
         gc.collect()
@@ -332,7 +350,6 @@ def train_on_datasets(params):
 torch_datasets_dict = {
         "mnist": MNIST,
         "fmnist": FashionMNIST,
-        "cifar10": CIFAR10,
         "bent": ut.bent,
         "sinusoidal": ut.sinusoidal,
 }

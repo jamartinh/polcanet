@@ -16,3 +16,4 @@ polcanet
 medmnist
 pillow
 joblib
+scikit-lego

@@ -13,6 +13,7 @@ from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from polcanet.aencoders import dct_regularization
 from polcanet.utils import save_df_to_csv, save_figure
 
 
@@ -34,32 +35,48 @@ class PolcaNetLoss(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, class_labels=None):
+    def __init__(self,latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, delta=0., class_labels=None):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
         super().__init__()
+        self.latent_dim = latent_dim
+        self.r = r  # reconstruction loss weight
+        self.c = c  # classification loss weight
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.delta = delta  # experimental
         self.class_labels = class_labels
-        self.r = r  # reconstruction loss weight
-        self.c = c  # classification loss weight
 
-        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
-        self.register_buffer('a', pos)  # normalized axis
 
         self.loss_names = {"loss": "Total Loss",
                            "rec": "Reconstruction Loss",
-                           "ort": "Orthogonality Loss",
-                           "com": "Center of Mass Loss",
-                           "var": "Variance Reduction Loss",
-                           "iort": "Instance Orthogonality Loss",
                            }
-        if class_labels is not None:
+
+        if self.alpha != 0:
+            self.loss_names["ort"] = "Orthogonality Loss"
+        if self.beta != 0:
+            self.loss_names["com"] = "Center of Mass Loss"
+
+        if self.class_labels is not None:
             self.loss_names["class"] = "Classification Loss"
+            # if class labels are provided, the classification loss is enabled
+            # By analyzing the loss conflicts, we make the assumption that regularization losses are not needed,
+            # as the classification loss help regularizes the orthogonality and center of mass losses.
+            self.gamma = 0
+            self.delta = 0
         else:
             self.c = 0
+
+        if self.gamma != 0:
+            self.loss_names["var"] = "Variance Reduction Loss"
+        if self.delta != 0:
+            self.loss_names["iort"] = "Instance Orthogonality Loss"
+
+        # precompute the normalized axis and store it as a buffer
+        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
+        self.register_buffer('a', pos)  # normalized axis
 
     def forward(self, z, r, x, yp=None, target=None):
         """
@@ -75,28 +92,38 @@ class PolcaNetLoss(nn.Module):
         L_com: Center of mass loss
         L_var: Variance regularization loss
         L_class: Classification loss
+        L_iort: Instance orthogonality loss (experimental)
 
         """
-        batch_size = x.shape[0]
+
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
 
         L_rec = F.mse_loss(r, x) if self.r != 0 else 0
-        L_ort = self.orthogonality_loss(z) if self.alpha != 0 and batch_size >= 16 else 0
-        L_com = self.center_of_mass_loss(self.a, w) if self.beta != 0 and batch_size >= 16 else 0
+        L_ort = self.orthogonality_loss(z) if self.alpha != 0 else 0
+        L_com = self.center_of_mass_loss(self.a, w) if self.beta != 0 else 0
         L_var = v.mean() if self.gamma != 0 else 0
-        L_class = self.classification_loss(yp, target) if self.c != 0 and self.class_labels is not None else 0
-        L_iort = self.instance_orthogonality_loss(z) if self.alpha != 0 and batch_size >= 16 else 0
+        L_class = self.classification_loss(yp, target) if self.c != 0 else 0
+        L_iort = self.instance_orthogonality_loss(z) if self.delta != 0 else 0  # experimental
 
         # Combine losses
-        # Purpose: Balance all loss components for optimal latent representation
+        # Purpose: Balance all loss components
         # Method: Weighted sum of individual losses
-        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + 0.01*self.alpha * L_iort
+        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + self.delta * L_iort
 
-        if self.class_labels is not None:
-            return L, (L_rec, L_ort, L_com, L_var, L_class, L_iort)
+        # return a tuple with only the non-zero losses depending on the weights
+        # dict of losses:
+        loss_dict = {
+                "rec": (L_rec, self.r),
+                "ort": (L_ort, self.alpha),
+                "com": (L_com, self.beta),
+                "var": (L_var, self.gamma),
+                "class": (L_class, self.c),
+                "iort": (L_iort, self.delta),
+        }
+        aux_losses = [l for l, weight in loss_dict.values() if weight != 0]
 
-        return L, (L_rec, L_ort, L_com, L_var, L_iort)
+        return L, aux_losses
 
     @staticmethod
     def center_of_mass_loss(x, w):
@@ -111,8 +138,32 @@ class PolcaNetLoss(nn.Module):
 
     @staticmethod
     def classification_loss(yp, target):
-        # If class labels are provided, compute classification loss
-        L_class = F.cross_entropy(yp, target)
+        """
+        Calculate classification loss based on prediction and target shapes.
+        Handles binary, multi-class, and multi-label classification.
+
+        Args:
+        yp (torch.Tensor): Model predictions (logits), shape (batch_size, num_classes)
+        target (torch.Tensor): Ground truth labels
+            - For binary/multi-class: shape (batch_size,) or (batch_size, 1)
+            - For multi-label: shape (batch_size, num_classes) where num_classes > 1
+
+        Returns:
+        torch.Tensor: Calculated loss
+        """
+
+        assert len(yp.shape) == 2, "Predictions should be 2D: (batch_size, num_classes)"
+        assert yp.shape[0] == target.shape[0], "Batch sizes should match"
+
+        if len(target.shape) == 1 or (len(target.shape) == 2 and target.shape[1] == 1):
+            # Binary or multi-class classification
+            L_class = F.cross_entropy(yp, target.view(-1).long())
+        elif len(target.shape) == 2 and target.shape[1] > 1:
+            # Multi-label classification
+            L_class = F.binary_cross_entropy_with_logits(yp, target.float())
+        else:
+            raise ValueError("Unsupported target shape")
+
         return L_class
 
     @staticmethod
@@ -124,11 +175,11 @@ class PolcaNetLoss(nn.Module):
         # Add a little additive noise to z
         z = z + 1e-6 * torch.randn_like(z)
 
-        # Normalize z along the batch dimension (explicitly added)
+        # Normalize z along the batch dimension
         z_norm = F.normalize(z, p=2, dim=0)
 
         # Compute cosine similarity matrix
-        S = torch.mm(z_norm.t(), z_norm)
+        S = torch.mm(z_norm.t(), z_norm) # z_norm.t() @ z_norm = I
         S = S.clamp(-1 + eps, 1 - eps)  # clamp to avoid NaNs and numerical instability
 
         idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
@@ -234,6 +285,7 @@ class PolcaNet(nn.Module):
                  alpha=1e-2,
                  beta=1e-2,
                  gamma=1e-4,
+                 delta=0.0,
                  class_labels=None,
                  analyzer_rate=0.1,
                  ):
@@ -259,9 +311,16 @@ class PolcaNet(nn.Module):
             self.decoder.encoder = None
             del self.decoder.encoder
 
-        self.polca_loss = PolcaNetLoss(latent_dim, r, c, alpha, beta, gamma, class_labels)
+        self.polca_loss = PolcaNetLoss(
+                                       latent_dim=latent_dim,
+                                       r=r,
+                                       c=c,
+                                       alpha=alpha, beta=beta, gamma=gamma, delta=delta,
+                                       class_labels=class_labels)
         self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:],
                                                   rate=analyzer_rate)
+
+
 
     def forward(self, x):
         z = self.encoder(x)
@@ -302,7 +361,7 @@ class PolcaNet(nn.Module):
             z = torch.tensor(z, dtype=torch.float32, device=self.device)
 
         # Ensure z has the correct shape
-        if z.shape[1] < self.latent_dim:
+        if z.size(1) < self.latent_dim:
             difference = self.latent_dim - z.shape[1]
             padding = torch.zeros(z.shape[0], difference, device=self.device)
             z = torch.cat([z, padding], dim=1)
@@ -338,7 +397,7 @@ class PolcaNet(nn.Module):
         return self
 
     def train_model(self, data, y=None, batch_size=None,
-                    num_epochs=100, report_freq=10, lr=1e-3, verbose=1, fine_tune=False):
+                    num_epochs=100, report_freq=10, lr=1e-3,weight_decay=1e-2, verbose=1, optimizer = None):
         """
         Train the model using the given data.
         Usage:
@@ -354,18 +413,9 @@ class PolcaNet(nn.Module):
             >>> model.train_model(data_loader, num_epochs=10000, report_freq=10, lr=1e-3)
 
         """
-        # Create the optimizer
-        if not fine_tune:
-            for param in self.parameters():
-                param.requires_grad = True
-            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-            self.loss_analyzer.enabled = True
-        else:
-            for param in self.encoder.parameters():
-                param.requires_grad = False
-            optimizer = torch.optim.Adam(self.decoder.parameters(), lr=lr)
-            self.loss_analyzer.enabled = False
-
+        # Create the optimizer if not provided
+        optimizer = optimizer or torch.optim.AdamW(self.parameters(), lr=lr, weight_decay=weight_decay)
+        self.loss_analyzer.enabled = True
 
 
         if self.class_labels is not None and y is None:
@@ -400,7 +450,7 @@ class PolcaNet(nn.Module):
             print("Training interrupted by user.")
             return None
 
-    def fitter_data_loader(self,optimizer, data_loader, num_epochs=100):
+    def fitter_data_loader(self, optimizer, data_loader, num_epochs=100):
         self.train()
 
         for epoch in range(num_epochs):
@@ -465,7 +515,12 @@ class PolcaNet(nn.Module):
         yp = z[1] if self.class_labels is not None else None
         z = z[0] if self.class_labels is not None else z
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
-        torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=1.0)
+        # # L1 regularization factor
+        # lambda_l1 = 0.1
+        # l1_penalty = torch.cat([p.view(-1) for p in self.parameters() if p.requires_grad]).abs().mean()
+        # loss += lambda_l1 * l1_penalty
+
+        # torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=1.0)
 
         # Analyze loss conflicts
         if self.loss_analyzer is not None:
@@ -476,6 +531,27 @@ class PolcaNet(nn.Module):
         optimizer.step()
 
         return loss, aux_losses
+
+
+
+class LatentSpaceConv(nn.Module):
+
+    def __init__(self, n_features, conv_out_channels, kernel_size=5, padding=2):
+        super(LatentSpaceConv, self).__init__()
+        self.conv = nn.Conv1d(in_channels=1,
+                              out_channels=conv_out_channels,
+                              kernel_size=kernel_size,
+                              padding=padding)
+        self.fc = nn.Linear(conv_out_channels * n_features, n_features)
+
+
+    def forward(self, z):
+        batch_dim, n_features = z.shape
+        z_b = z.unsqueeze(1)  # Shape: (batch_dim, 1, n_features)
+        conv_out = self.conv(z_b)  # Shape: (batch_dim, conv_out_channels, n_features)
+        flattened = conv_out.view(batch_dim, -1)  # Shape: (batch_dim, conv_out_channels * n_features)
+        output = self.fc(flattened)  # Shape: (batch_dim, n_features)
+        return output
 
 
 class EncoderWrapper(nn.Module):
@@ -501,22 +577,25 @@ class EncoderWrapper(nn.Module):
         # Apply orthogonal initialization
         nn.init.orthogonal_(layer.weight)
         # Apply the scaling to the weight matrix
-        # with torch.no_grad():
-        #     # Get the number of features (output dimension)
-        #     n_features, n_inputs = layer.weight.shape
-        #     # Scale the orthogonal matrix
-        #     scales = torch.linspace(1.0, 0.1, n_features)
-        #     scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
-        #     layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
+        with torch.no_grad():
+            # Get the number of features (output dimension)
+            n_features, n_inputs = layer.weight.shape
+            # Scale the orthogonal matrix
+            scales = torch.linspace(1.0, 0.1, n_features)
+            scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
+            layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
 
+        layers.append(layer)
+        layer = LatentSpaceConv(self.latent_dim, conv_out_channels=32)
         layers.append(layer)
         layer = nn.Softsign()
         layers.append(layer)
         self.post_encoder = nn.Sequential(*layers)
 
         if class_labels is not None:
-            # create a simple perceptron layer
+            # Binary, multi-class and multi-label-binary classification
             self.classifier = nn.Linear(latent_dim, len(class_labels))
+
 
     def forward(self, x):
         z = self.encoder(x)
@@ -669,7 +748,7 @@ class LossConflictAnalyzer:
             return ''
 
         styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1).format(
-            {'interactions': '{:.0f}', 'conflicts': '{:.0f}', 'conflict_rate': '{:.3f}', 'avg_similarity': '{:.3f}'})
+            {'interactions': '{:.0f}', 'conflicts': '{:.0f}', 'conflict_rate': '{:.4f}', 'avg_similarity': '{:.4f}'})
 
         display(styled_df)
         save_df_to_csv(df, "loss_interaction_report.csv")
@@ -697,7 +776,8 @@ class LossConflictAnalyzer:
 
         # Draw the heatmap with the mask and correct aspect ratio
         sns.heatmap(sim_matrix, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0, square=True, linewidths=.5,
-                    cbar_kws={"shrink": .5}, annot=True, xticklabels=self.loss_names, yticklabels=self.loss_names)
+                    cbar_kws={"shrink": .5}, annot=True,
+                    xticklabels=self.loss_names, fmt='.2f', yticklabels=self.loss_names)
 
         # Add relationship annotations
         for i in range(matrix_size):

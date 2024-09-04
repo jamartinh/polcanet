@@ -472,7 +472,7 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
 
 
     # take a random sample of size at most 1000 of xx and yy since this is a heavy scatter plot
-    indices = np.random.choice(xx.shape[0], max(10*num_samples,xx.shape[0]), replace=False)
+    indices = np.random.choice(xx.shape[0], max(5*num_samples,xx.shape[0]), replace=False)
     xx = xx[indices]
     yy = yy[indices]
     add_colors = alpha_colors[indices]

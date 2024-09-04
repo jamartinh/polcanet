@@ -1,5 +1,9 @@
+import math
+from functools import lru_cache
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn as nn
 
 
@@ -232,7 +236,6 @@ class ConvEncoder(nn.Module):
 
         # Define the encoder as a sequential model
         self.encoder = nn.Sequential(*layers)
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -477,3 +480,109 @@ class LinearDecoder(nn.Module):
             z = z[0] * z[1]
         x = self.decoder(z)
         return x.view(-1, *self.input_dim)
+
+
+@lru_cache(maxsize=None)
+def create_dct_matrix(N: int, norm: str = 'ortho') -> torch.Tensor:
+    """Create and cache DCT matrix for a given size N."""
+    k = torch.arange(N, dtype=torch.float32)
+    n = k.unsqueeze(1)
+    dct_mat = torch.cos(np.pi * k * (2 * n + 1) / (2 * N))
+
+    if norm == 'ortho':
+        dct_mat[:, 0] *= 1.0 / np.sqrt(2)
+        dct_mat *= np.sqrt(2.0 / N)
+
+    return dct_mat
+
+
+def dct_1d(x: torch.Tensor) -> torch.Tensor:
+    """Apply 1D DCT to the last dimension of x."""
+    N = x.shape[-1]
+    dct_mat = create_dct_matrix(N).to(x.device)
+
+    # Reshape input for batched 1D convolution
+    x_reshaped = x.reshape(-1, 1, N)
+
+    # Apply convolution and reshape back
+    dct_coeffs = F.conv1d(x_reshaped, dct_mat.unsqueeze(1)).reshape(x.shape)
+
+    return dct_coeffs
+
+
+def dct_regularization(model, lambda_reg=0.01, k0=10, multidimensional=True):
+    """
+    Apply DCT-based regularization to the weights of a PyTorch model.
+
+    Args:
+    - model: The PyTorch model.
+    - lambda_reg: The regularization strength.
+    - k0: Threshold for separating low- and high-frequency components.
+    - multidimensional: If True, apply DCT to each dimension separately.
+                        If False, flatten the tensor before applying DCT.
+
+    Returns:
+    - The DCT regularization loss.
+    """
+    dct_reg_loss = 0.0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if param.dim() == 1:
+                continue  # Skip 1D parameters
+
+            if multidimensional:
+                # Compute DCT for each dimension separately
+                param_dct = param
+                for dim in range(param.dim()):
+                    param_dct = dct_1d(param_dct.transpose(dim, -1)).transpose(dim, -1)
+
+                # Penalize high-frequency components
+                high_freq_mask = torch.ones_like(param_dct)
+                for dim in range(param.dim()):
+                    slice_obj = [slice(None)] * param.dim()
+                    slice_obj[dim] = slice(k0, None)
+                    high_freq_mask[tuple(slice_obj)] = 0
+
+                high_freq_penalty = (param_dct * (1 - high_freq_mask)) ** 2
+            else:
+                # Flatten the parameter tensor and apply 1D DCT
+                param_flat = param.view(-1)
+                param_dct = dct_1d(param_flat)
+
+                # Penalize high-frequency components
+                high_freq_penalty = param_dct[k0:] ** 2
+
+            # Sum up the penalty
+            dct_reg_loss += high_freq_penalty.sum()
+
+    return lambda_reg * dct_reg_loss
+
+
+def selu_init(layer):
+    """
+    Initialize a layer with SELU-appropriate initialization.
+
+    Args:
+    layer (nn.Module): The layer to initialize. Can be nn.Linear or nn.Conv1d/2d/3d.
+
+    Returns:
+    nn.Module: The initialized layer.
+    """
+    if not isinstance(layer, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        raise ValueError("This initialization is only suitable for nn.Linear and nn.ConvNd layers.")
+
+    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(layer.weight)
+
+    # Initialize weights
+    nn.init.kaiming_normal_(layer.weight, mode='fan_in', nonlinearity='linear')
+
+    # Scale the weights
+    with torch.no_grad():
+        layer.weight *= math.sqrt(1 / 3)
+
+    # Initialize bias if it exists
+    if layer.bias is not None:
+        bound = math.sqrt(1 / fan_in)
+        nn.init.uniform_(layer.bias, -bound, bound)
+
+    return layer
