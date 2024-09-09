@@ -4,7 +4,6 @@ from typing import Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scipy
 import seaborn as sns
 import torch
 from IPython.display import display
@@ -14,6 +13,7 @@ from scipy.stats import gaussian_kde
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics.pairwise import cosine_similarity
 
+from examples.notebooks.train import in_jupyterlab
 from polcanet import utils as ut
 from polcanet.utils import save_figure, save_df_to_csv
 
@@ -302,7 +302,8 @@ def orthogonality_test_analysis(model, pca, data, num_samples=1000, n_components
     display(df_report)
     # Save the report to a CSV file
     save_df_to_csv(df_report, "mutual_information_report_polca.csv")
-    plot_lower_triangular_mutual_information(mi_matrix,title='Pairwise Mutual Information POLCA', save_fig="mutual_information_matrix_polca.pdf")
+    plot_lower_triangular_mutual_information(mi_matrix, title='Pairwise Mutual Information POLCA',
+                                             save_fig="mutual_information_matrix_polca.pdf")
 
     # plot mutual information matrix for PCA
     save_fig = save_figs[3] if save_figs else None
@@ -320,7 +321,8 @@ def orthogonality_test_analysis(model, pca, data, num_samples=1000, n_components
     display(df_report)
     # Save the report to a CSV file
     save_df_to_csv(df_report, "mutual_information_report_pca.csv")
-    plot_lower_triangular_mutual_information(mi_matrix_pca,title='Pairwise Mutual Information PCA', save_fig="mutual_information_matrix_pca.pdf")
+    plot_lower_triangular_mutual_information(mi_matrix_pca, title='Pairwise Mutual Information PCA',
+                                             save_fig="mutual_information_matrix_pca.pdf")
 
     # Plot scatter correlation matrix
     save_fig = save_figs[1] if save_figs else None
@@ -446,7 +448,6 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         yy = yy.cpu().numpy().flatten()
         additivity_corr = np.corrcoef(xx, yy)[0, 1]
 
-
         # Test Homogeneity
         alpha = torch.linspace(alpha_min, alpha_max, steps=shape[0], device=x.device).unsqueeze(1)
         xx_alpha = f(alpha * x)  # Unsqueeze alpha to match x's dimensions
@@ -468,11 +469,8 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         # diff_xy = diff_xy.cpu().numpy()
         # lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
 
-
-
-
     # take a random sample of size at most 1000 of xx and yy since this is a heavy scatter plot
-    indices = np.random.choice(xx.shape[0], max(5*num_samples,xx.shape[0]), replace=False)
+    indices = np.random.choice(xx.shape[0], max(5 * num_samples, xx.shape[0]), replace=False)
     xx = xx[indices]
     yy = yy[indices]
     add_colors = alpha_colors[indices]
@@ -570,6 +568,43 @@ def embedding_analysis(model, pca, data, targets, labels_dict, num_samples=5000)
     # Encode the samples
     latents = model.encode(x_samples)
     latent_pca = pca.transform(np.squeeze(x_samples.reshape(x_samples.shape[0], -1)))
-    targets_samples = targets_samples if targets_samples.ndim == 1 or targets_samples.shape[1] == 1 else targets_samples[:, 0]
+    targets_samples = targets_samples if targets_samples.ndim == 1 or targets_samples.shape[
+        1] == 1 else targets_samples[:, 0]
     ut.plot2d_analysis(latent_pca, targets_samples, title="PCA transform", labels_dict=labels_dict, legend=True)
     ut.plot2d_analysis(latents, targets_samples, title="POLCA-Net latent", labels_dict=labels_dict, legend=True)
+
+
+def loss_interaction_analysis(model):
+    report_dict, df = model.polca_loss.loss_analyzer.report()
+    print(f"Loss Interaction Analysis Report:")
+    print(f"Total interactions: {report_dict['total_interactions']}")
+    print(f"Total conflicts: {report_dict['total_conflicts']}")
+    print(f"Overall conflict rate: {report_dict['overall_conflict_rate']:.4f}")
+    print(f"\nPairwise Statistics (sorted by similarity):")
+
+    def color_cells(val, column):
+        if column == 'relationship':
+            colors = {"Strongly Cooperative": "color: green", "Weakly Cooperative": "color: green",
+                      "Weakly Conflicting": "color: coral", "Strongly Conflicting": "color: red"}
+            return colors.get(val, "")
+        elif column == 'avg_similarity':
+            if val > model.polca_loss.loss_analyzer.conflict_threshold:
+                return 'color: green'
+            elif val > 0:
+                return 'color: green'
+            elif val > -model.polca_loss.loss_analyzer.conflict_threshold:
+                return 'color: coral'
+            else:
+                return 'color: red'
+        return ''
+
+    styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1).format(
+        {'interactions': '{:.0f}', 'conflicts': '{:.0f}', 'conflict_rate': '{:.4f}', 'avg_similarity': '{:.4f}'})
+
+    if in_jupyterlab():
+        display(styled_df)
+    else:
+        print(df)
+
+    ut.set_fig_prefix("")
+    save_df_to_csv(df, "loss_interaction_report.csv")

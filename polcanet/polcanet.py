@@ -4,17 +4,147 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from IPython.core.display_functions import display
-from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from polcanet.aencoders import dct_regularization
-from polcanet.utils import save_df_to_csv, save_figure
+
+class LossConflictAnalyzer:
+    def __init__(self, loss_names: List[str] = None, rate=0.1, conflict_threshold: float = 0.1):
+        """
+        Initializes the LossConflictAnalyzer class.
+
+        Args:
+            model (torch.nn.Module): The model to analyze.
+            loss_names (List[str], optional): List of loss names. Defaults to None.
+            rate (float, optional): Rate of updates as a probability. Defaults to 0.1.
+            conflict_threshold (float, optional): Threshold for conflict detection. Defaults to 0.1.
+        """
+        self.pairwise_similarities = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_interactions = {}
+        self.total_conflicts = 0
+        self.total_interactions = 0
+        self.loss_names = loss_names if loss_names else []
+        # rate of updates as a probability <1 if a random number is less than this rate the analysis will be done
+        # this is to limit the heavy computation of the analysis during training
+        self.rate = rate
+        self.conflict_threshold = conflict_threshold
+        self.reset_statistics()
+        self.enabled = True
+
+    def reset_statistics(self):
+        self.total_interactions = 0
+        self.total_conflicts = 0
+        self.pairwise_interactions = {}
+        self.pairwise_conflicts = {}
+        self.pairwise_similarities = {}
+
+    def step(self, model, losses: List[torch.Tensor]) -> None:
+        if len(losses) != len(self.loss_names):
+            raise ValueError("Number of losses must match number of loss names")
+
+        # rate test
+        if not self.enabled or np.random.rand() > self.rate:
+            return
+
+        grads = self.compute_grad(model, losses)
+        self.analyze_conflicts(grads)
+
+    @staticmethod
+    def compute_grad(model, losses: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
+        grads = []
+        for loss in losses:
+            model.zero_grad()
+            loss.backward(retain_graph=True)
+            grad_dict = {name: param.grad.clone() for name, param in model.named_parameters() if
+                         param.grad is not None}
+            grads.append(grad_dict)
+        return grads
+
+    def analyze_conflicts(self, grads: List[Dict[str, torch.Tensor]]) -> None:
+        """
+        Analyze conflicts between gradients of different losses.
+
+        Args:
+            grads (List[Dict[str, torch.Tensor]]): List of gradient dictionaries for each loss.
+        """
+        num_losses = len(grads)
+
+        for (i, j) in combinations(range(num_losses), 2):
+            conflict_key = self.get_conflict_key(i, j)
+            g_i, g_j = grads[i], grads[j]
+
+            similarity = self.compute_similarity(g_i, g_j)
+
+            self.total_interactions += 1
+            self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
+            self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [similarity]
+
+            if similarity < -self.conflict_threshold:
+                self.total_conflicts += 1
+                self.pairwise_conflicts[conflict_key] = self.pairwise_conflicts.get(conflict_key, 0) + 1
+
+    @staticmethod
+    def compute_similarity(grad1: Dict[str, torch.Tensor], grad2: Dict[str, torch.Tensor]) -> float:
+        """
+        Compute the cosine similarity between two gradients.
+        """
+        dot_product = 0
+        norm1 = 0
+        norm2 = 0
+        for name in grad1.keys():
+            if name in grad2:
+                g1, g2 = grad1[name], grad2[name]
+                dot_product += torch.sum(g1 * g2).item()
+                norm1 += torch.sum(g1 * g1).item()
+                norm2 += torch.sum(g2 * g2).item()
+
+        if norm1 == 0 or norm2 == 0:
+            return 0
+        return dot_product / (np.sqrt(norm1) * np.sqrt(norm2))
+
+    def get_conflict_key(self, i: int, j: int) -> Tuple[str, str]:
+        return self.loss_names[i], self.loss_names[j]
+
+    def report(self) -> Tuple[Dict[str, float], pd.DataFrame]:
+        overall_conflict_rate = self.total_conflicts / max(1, self.total_interactions)
+
+        report_dict = {'total_interactions': self.total_interactions, 'total_conflicts': self.total_conflicts,
+                       'overall_conflict_rate': overall_conflict_rate, 'pairwise_data': {}}
+
+        df_data = []
+
+        for (loss1, loss2), interactions in self.pairwise_interactions.items():
+            conflicts = self.pairwise_conflicts.get((loss1, loss2), 0)
+            similarities = self.pairwise_similarities[(loss1, loss2)]
+            avg_similarity = np.mean(similarities)
+            conflict_rate = conflicts / interactions if interactions > 0 else 0
+
+            if avg_similarity > self.conflict_threshold:
+                relationship = "Strongly Cooperative"
+            elif avg_similarity > 0:
+                relationship = "Weakly Cooperative"
+            elif avg_similarity > -self.conflict_threshold:
+                relationship = "Weakly Conflicting"
+            else:
+                relationship = "Strongly Conflicting"
+
+            report_dict['pairwise_data'][(loss1, loss2)] = {'interactions': interactions, 'conflicts': conflicts,
+                                                            'conflict_rate': conflict_rate,
+                                                            'avg_similarity': avg_similarity,
+                                                            'relationship': relationship}
+
+            df_data.append({'loss1': loss1, 'loss2': loss2, 'interactions': interactions, 'conflicts': conflicts,
+                            'conflict_rate': conflict_rate, 'avg_similarity': avg_similarity,
+                            'relationship': relationship})
+
+        df = pd.DataFrame(df_data)
+        df = df.sort_values('avg_similarity').reset_index(drop=True)
+
+        return report_dict, df
 
 
 class PolcaNetLoss(nn.Module):
@@ -35,48 +165,33 @@ class PolcaNetLoss(nn.Module):
 
     """
 
-    def __init__(self,latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, delta=0., class_labels=None):
+    def __init__(self, latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, class_labels=None, analyzer_rate=0.1):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
         super().__init__()
         self.latent_dim = latent_dim
         self.r = r  # reconstruction loss weight
-        self.c = c  # classification loss weight
+        self.c = c if class_labels is not None else 0  # classification loss weight
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        self.delta = delta  # experimental
         self.class_labels = class_labels
 
+        self.loss_names = {"loss": "Total Loss"}
 
-        self.loss_names = {"loss": "Total Loss",
-                           "rec": "Reconstruction Loss",
-                           }
-
-        if self.alpha != 0:
-            self.loss_names["ort"] = "Orthogonality Loss"
-        if self.beta != 0:
-            self.loss_names["com"] = "Center of Mass Loss"
-
-        if self.class_labels is not None:
-            self.loss_names["class"] = "Classification Loss"
-            # if class labels are provided, the classification loss is enabled
-            # By analyzing the loss conflicts, we make the assumption that regularization losses are not needed,
-            # as the classification loss help regularizes the orthogonality and center of mass losses.
-            self.gamma = 0
-            self.delta = 0
-        else:
-            self.c = 0
-
-        if self.gamma != 0:
-            self.loss_names["var"] = "Variance Reduction Loss"
-        if self.delta != 0:
-            self.loss_names["iort"] = "Instance Orthogonality Loss"
+        self.loss_names.update({
+                "rec": "Reconstruction Loss" if self.r != 0 else None,
+                "ort": "Orthogonality Loss" if self.alpha != 0 else None,
+                "com": "Center of Mass Loss" if self.beta != 0 else None,
+                "class": "Classification Loss" if self.class_labels is not None else None,
+                "var": "Variance Reduction Loss" if self.gamma != 0 else None
+        })
+        self.loss_names = {k: v for k, v in self.loss_names.items() if v is not None}
 
         # precompute the normalized axis and store it as a buffer
-        pos = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
-        self.register_buffer('a', pos)  # normalized axis
+        self.i = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
+        self.loss_analyzer = LossConflictAnalyzer(loss_names=list(self.loss_names)[1:], rate=analyzer_rate)
 
     def forward(self, z, r, x, yp=None, target=None):
         """
@@ -87,53 +202,50 @@ class PolcaNetLoss(nn.Module):
         v: variance of latent representation
 
         Losses:
-        L_rec: Reconstruction loss
-        L_ort: Orthogonality loss
-        L_com: Center of mass loss
-        L_var: Variance regularization loss
-        L_class: Classification loss
-        L_iort: Instance orthogonality loss (experimental)
+        l_rec: Reconstruction loss
+        l_ort: Orthogonality loss
+        l_com: Center of mass loss
+        l_var: Variance regularization loss
+        l_class: Classification loss
 
         """
 
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
 
-        L_rec = F.mse_loss(r, x) if self.r != 0 else 0
-        L_ort = self.orthogonality_loss(z) if self.alpha != 0 else 0
-        L_com = self.center_of_mass_loss(self.a, w) if self.beta != 0 else 0
-        L_var = v.mean() if self.gamma != 0 else 0
-        L_class = self.classification_loss(yp, target) if self.c != 0 else 0
-        L_iort = self.instance_orthogonality_loss(z) if self.delta != 0 else 0  # experimental
+        l_rec = F.mse_loss(r, x) if self.r != 0 else 0
+        l_ort = self.orthogonality_loss(z) if self.alpha != 0 else 0
+        l_com = self.center_of_mass_loss(self.i, w) if self.beta != 0 else 0
+        l_var = v.mean() if self.gamma != 0 else 0
+        l_class = self.classification_loss(yp, target) if self.c != 0 else 0
 
         # Combine losses
         # Purpose: Balance all loss components
         # Method: Weighted sum of individual losses
-        L = self.r * L_rec + self.c * L_class + self.alpha * L_ort + self.beta * L_com + self.gamma * L_var + self.delta * L_iort
+        loss = self.r * l_rec + self.c * l_class + self.alpha * l_ort + self.beta * l_com + self.gamma * l_var
 
         # return a tuple with only the non-zero losses depending on the weights
         # dict of losses:
         loss_dict = {
-                "rec": (L_rec, self.r),
-                "ort": (L_ort, self.alpha),
-                "com": (L_com, self.beta),
-                "var": (L_var, self.gamma),
-                "class": (L_class, self.c),
-                "iort": (L_iort, self.delta),
+                "rec": (l_rec, self.r),
+                "ort": (l_ort, self.alpha),
+                "com": (l_com, self.beta),
+                "var": (l_var, self.gamma),
+                "class": (l_class, self.c),
         }
         aux_losses = [l for l, weight in loss_dict.values() if weight != 0]
 
-        return L, aux_losses
+        return loss, aux_losses
 
     @staticmethod
-    def center_of_mass_loss(x, w):
+    def center_of_mass_loss(i, w):
         """
         Center of mass loss
         Purpose: Concentrate information in earlier latent dimensions
         Method: Minimize the weighted average of normalized variances, e.g., the center of mass.
         """
         # Compute and normalize variance and energy
-        L_com = torch.mean(w * x, dim=0)
+        L_com = torch.mean(i.to(w.device) * w, dim=0)  # + torch.mean(z * w, dim=0)
         return L_com
 
     @staticmethod
@@ -152,19 +264,16 @@ class PolcaNetLoss(nn.Module):
         torch.Tensor: Calculated loss
         """
 
-        assert len(yp.shape) == 2, "Predictions should be 2D: (batch_size, num_classes)"
-        assert yp.shape[0] == target.shape[0], "Batch sizes should match"
-
         if len(target.shape) == 1 or (len(target.shape) == 2 and target.shape[1] == 1):
-            # Binary or multi-class classification
-            L_class = F.cross_entropy(yp, target.view(-1).long())
+            # Binary and multi-class classification
+            l_class = F.cross_entropy(yp, target.view(-1).long())
         elif len(target.shape) == 2 and target.shape[1] > 1:
-            # Multi-label classification
-            L_class = F.binary_cross_entropy_with_logits(yp, target.float())
+            # Multi-label binary classification
+            l_class = F.binary_cross_entropy_with_logits(yp, target.float())
         else:
             raise ValueError("Unsupported target shape")
 
-        return L_class
+        return l_class
 
     @staticmethod
     def orthogonality_loss(z, eps=1e-8):
@@ -173,63 +282,18 @@ class PolcaNetLoss(nn.Module):
         Method: Penalize off-diagonal elements of the cosine similarity matrix
         """
         # Add a little additive noise to z
-        z = z + 1e-6 * torch.randn_like(z)
-
+        z = z + 1e-8 * torch.randn_like(z)
         # Normalize z along the batch dimension
         z_norm = F.normalize(z, p=2, dim=0)
 
         # Compute cosine similarity matrix
-        S = torch.mm(z_norm.t(), z_norm) # z_norm.t() @ z_norm = I
-        S = S.clamp(-1 + eps, 1 - eps)  # clamp to avoid NaNs and numerical instability
+        s = torch.mm(z_norm.t(), z_norm)  # z_norm.t() @ z_norm = I
+        s = s.clamp(-1 + eps, 1 - eps)  # clamp to avoid NaNs and numerical instability
 
-        idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)  # indices of triu w/o diagonal
-        cos_sim = S[idx0, idx1]
+        idx0, idx1 = torch.triu_indices(s.shape[0], s.shape[1], offset=1)  # indices of triu w/o diagonal
+        cos_sim = s[idx0, idx1]
 
         loss = torch.mean(cos_sim.square())
-        if torch.isnan(loss):
-            print("NAN")
-            print("z shape:", z.shape)
-            print("z_norm shape:", z_norm.shape)
-            print("max min z_norm:", torch.max(z_norm), torch.min(z_norm))
-            print("max min S:", torch.max(S), torch.min(S))
-            print("max min S_triu:", torch.max(cos_sim), torch.min(cos_sim))
-            raise ValueError("Orthogonality loss is NaN")
-
-        return loss
-
-    @staticmethod
-    def instance_orthogonality_loss(z, eps=1e-8):
-        """ Instance orthogonality loss
-        Purpose: Encourage instances (row vectors) to be uncorrelated
-        Method: Penalize off-diagonal elements of the instance cosine similarity matrix
-        """
-        # Add a little additive noise to z
-        z = z + 1e-6 * torch.randn_like(z)
-
-        # Normalize z along the feature dimension (dim=1)
-        z_norm = F.normalize(z, p=2, dim=1)
-
-        # Compute instance cosine similarity matrix
-        S = torch.mm(z_norm, z_norm.t())
-
-        # Apply clamp to avoid potential numerical instability
-        S = S.clamp(-1 + eps, 1 - eps)
-
-        # Extract upper triangular part (excluding diagonal)
-        idx0, idx1 = torch.triu_indices(S.shape[0], S.shape[1], offset=1)
-        cos_sim = S[idx0, idx1]
-
-        # Compute loss
-        loss = torch.mean(cos_sim.square())
-
-        if torch.isnan(loss):
-            print("NaN detected in instance orthogonality loss")
-            print("z shape:", z.shape)
-            print("z_norm shape:", z_norm.shape)
-            print("max min z_norm:", torch.max(z_norm), torch.min(z_norm))
-            print("max min S:", torch.max(S), torch.min(S))
-            print("max min cos_sim:", torch.max(cos_sim), torch.min(cos_sim))
-            raise ValueError("Instance orthogonality loss is NaN")
 
         return loss
 
@@ -246,8 +310,6 @@ class PolcaNet(nn.Module):
         latent_dim (int): The number of latent dimensions.
         class_labels (list): The list of class labels.
         polca_loss (PolcaNetLoss): The loss function.
-        loss_analyzer (LossConflictAnalyzer): The loss conflict analyzer.
-
 
 
     Methods:
@@ -273,7 +335,6 @@ class PolcaNet(nn.Module):
         model.r_error(data)
         latents, reconstructed = model.predict(data)
 
-
     """
 
     def __init__(self,
@@ -285,7 +346,6 @@ class PolcaNet(nn.Module):
                  alpha=1e-2,
                  beta=1e-2,
                  gamma=1e-4,
-                 delta=0.0,
                  class_labels=None,
                  analyzer_rate=0.1,
                  ):
@@ -312,15 +372,15 @@ class PolcaNet(nn.Module):
             del self.decoder.encoder
 
         self.polca_loss = PolcaNetLoss(
-                                       latent_dim=latent_dim,
-                                       r=r,
-                                       c=c,
-                                       alpha=alpha, beta=beta, gamma=gamma, delta=delta,
-                                       class_labels=class_labels)
-        self.loss_analyzer = LossConflictAnalyzer(self, loss_names=list(self.polca_loss.loss_names)[1:],
-                                                  rate=analyzer_rate)
-
-
+            latent_dim=latent_dim,
+            r=r,
+            c=c,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            class_labels=class_labels,
+            analyzer_rate=analyzer_rate,
+        )
 
     def forward(self, x):
         z = self.encoder(x)
@@ -380,16 +440,11 @@ class PolcaNet(nn.Module):
 
         return r.cpu().numpy()
 
-    def r_error(self, in_x, w=None):
+    def rec_error(self, in_x, w=None):
         """Compute the reconstruction error"""
         z, r = self.predict(in_x, w)
         error = (in_x - r).reshape(in_x.shape[0], -1)
         return np.mean(error ** 2, axis=-1)
-
-    def to_device(self, device):
-        """Move the encoder to the given device."""
-        self.device = device
-        self.to(device)
 
     def to(self, device):
         self.device = device
@@ -397,7 +452,7 @@ class PolcaNet(nn.Module):
         return self
 
     def train_model(self, data, y=None, batch_size=None,
-                    num_epochs=100, report_freq=10, lr=1e-3,weight_decay=1e-2, verbose=1, optimizer = None):
+                    num_epochs=100, report_freq=10, lr=1e-3, weight_decay=1e-2, verbose=1, optimizer=None):
         """
         Train the model using the given data.
         Usage:
@@ -405,7 +460,7 @@ class PolcaNet(nn.Module):
             >>> data = np.random.rand(100, 784)
             >>> latent_dim = 32
             >>> model = PolcaNet(encoder, decoder, latent_dim=latent_dim, alpha=1.0, beta=1.0, gamma=1.0, class_labels=None
-            >>> model.to_device("cuda")
+            >>> model.to("cuda")
             >>> model.train_model(data, batch_size=256, num_epochs=10000, report_freq=10, lr=1e-3)
 
             Or using a data loader:
@@ -415,8 +470,6 @@ class PolcaNet(nn.Module):
         """
         # Create the optimizer if not provided
         optimizer = optimizer or torch.optim.AdamW(self.parameters(), lr=lr, weight_decay=weight_decay)
-        self.loss_analyzer.enabled = True
-
 
         if self.class_labels is not None and y is None:
             raise ValueError("Class labels are provided, but no target values are provided in train_model")
@@ -452,6 +505,8 @@ class PolcaNet(nn.Module):
 
     def fitter_data_loader(self, optimizer, data_loader, num_epochs=100):
         self.train()
+        if self.class_labels is None:
+            y = None
 
         for epoch in range(num_epochs):
             losses = defaultdict(list)
@@ -461,8 +516,6 @@ class PolcaNet(nn.Module):
                     y = batch[1].to(self.device)
                     # assure that the target is an integer tensor
                     y = y.to(torch.int64)
-                else:
-                    y = None
 
                 loss, aux_losses = self.learn_step(x, optimizer, y=y)
                 losses["loss"].append(loss.item())
@@ -516,22 +569,20 @@ class PolcaNet(nn.Module):
         z = z[0] if self.class_labels is not None else z
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y)
         # # L1 regularization factor
-        # lambda_l1 = 0.1
-        # l1_penalty = torch.cat([p.view(-1) for p in self.parameters() if p.requires_grad]).abs().mean()
-        # loss += lambda_l1 * l1_penalty
-
+        lambda_l1 = 0.1
+        l1_penalty = torch.cat([p.view(-1) for p in self.parameters() if p.requires_grad]).abs().mean()
+        loss += lambda_l1 * l1_penalty
         # torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=1.0)
 
         # Analyze loss conflicts
-        if self.loss_analyzer is not None:
-            self.loss_analyzer.analyze([l for l in aux_losses if not isinstance(l, (int, float))])
+        self.polca_loss.loss_analyzer.step(self, [l for l in aux_losses if not isinstance(l, (int, float))])
 
+        # Backward pass
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         return loss, aux_losses
-
 
 
 class LatentSpaceConv(nn.Module):
@@ -544,7 +595,6 @@ class LatentSpaceConv(nn.Module):
                               padding=padding)
         self.fc = nn.Linear(conv_out_channels * n_features, n_features)
 
-
     def forward(self, z):
         batch_dim, n_features = z.shape
         z_b = z.unsqueeze(1)  # Shape: (batch_dim, 1, n_features)
@@ -552,6 +602,38 @@ class LatentSpaceConv(nn.Module):
         flattened = conv_out.view(batch_dim, -1)  # Shape: (batch_dim, conv_out_channels * n_features)
         output = self.fc(flattened)  # Shape: (batch_dim, n_features)
         return output
+
+
+def legendre_polynomial_cache(n, x, cache):
+    """
+    Compute the n-th Legendre polynomial P_n(x) using a recurrence relation, with caching of previously computed polynomials.
+
+    Parameters:
+    - n (int): Degree of the Legendre polynomial.
+    - x (torch.Tensor): The input tensor of shape (batch_size,).
+    - cache (dict): A dictionary to store and retrieve previously computed Legendre polynomials.
+
+    Returns:
+    - torch.Tensor: The n-th Legendre polynomial evaluated at x.
+    """
+    if n in cache:
+        return cache[n]  # Return cached polynomial if already computed
+
+    if n == 1:
+        P1 = x
+        cache[1] = P1
+        return P1
+    elif n == 2:
+        P2 = (3 * x ** 2 - 1) / 2
+        cache[2] = P2
+        return P2
+    else:
+        # Recurrence relation: P_n(x) = ((2n-1)xP_(n-1) - (n-1)P_(n-2)) / n
+        Pn_1 = legendre_polynomial_cache(n - 1, x, cache)
+        Pn_2 = legendre_polynomial_cache(n - 2, x, cache)
+        Pn = ((2 * n - 1) * x * Pn_1 - (n - 1) * Pn_2) / n
+        cache[n] = Pn  # Store the computed polynomial in cache
+        return Pn
 
 
 class EncoderWrapper(nn.Module):
@@ -572,30 +654,28 @@ class EncoderWrapper(nn.Module):
         self.latent_dim = latent_dim
         self.encoder = encoder
         layers = []
-        layer = nn.Linear(latent_dim, latent_dim)
+        for i in range(3):
+            layer = nn.Linear(latent_dim, latent_dim)
+            # Apply orthogonal initialization
+            nn.init.orthogonal_(layer.weight)
+            # Apply the scaling to the weight matrix
+            with torch.no_grad():
+                # Get the number of features (output dimension)
+                n_features, n_inputs = layer.weight.shape
+                # Scale the orthogonal matrix
+                scales = torch.linspace(1.0, 0.1, n_features)
+                scaling_factor = 0.5  # To keep initial activations within a reasonable range for Tanh
+                layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
+            layers.append(layer)
 
-        # Apply orthogonal initialization
-        nn.init.orthogonal_(layer.weight)
-        # Apply the scaling to the weight matrix
-        with torch.no_grad():
-            # Get the number of features (output dimension)
-            n_features, n_inputs = layer.weight.shape
-            # Scale the orthogonal matrix
-            scales = torch.linspace(1.0, 0.1, n_features)
-            scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
-            layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
+        layer = nn.Tanh()
+        layers.append(layer)
 
-        layers.append(layer)
-        layer = LatentSpaceConv(self.latent_dim, conv_out_channels=32)
-        layers.append(layer)
-        layer = nn.Softsign()
-        layers.append(layer)
         self.post_encoder = nn.Sequential(*layers)
 
         if class_labels is not None:
             # Binary, multi-class and multi-label-binary classification
-            self.classifier = nn.Linear(latent_dim, len(class_labels))
-
+            self.classifier = nn.Linear(latent_dim, len(class_labels), bias=False)
 
     def forward(self, x):
         z = self.encoder(x)
@@ -604,198 +684,3 @@ class EncoderWrapper(nn.Module):
             return z, self.classifier(z)
 
         return z
-
-
-class LossConflictAnalyzer:
-    def __init__(self, model: torch.nn.Module, loss_names: List[str] = None, rate=0.1, conflict_threshold: float = 0.1):
-        self.pairwise_similarities = {}
-        self.pairwise_conflicts = {}
-        self.pairwise_interactions = {}
-        self.total_conflicts = 0
-        self.total_interactions = 0
-        self.model = model
-        self.loss_names = loss_names if loss_names else []
-        # rate of updates as a probability <1 if a random number is less than this rate the analysis will be done
-        # this is to limit the heavy computation of the analysis during training
-        self.rate = rate
-        self.conflict_threshold = conflict_threshold
-        self.reset_statistics()
-        self.enabled = True
-
-    def reset_statistics(self):
-        self.total_interactions = 0
-        self.total_conflicts = 0
-        self.pairwise_interactions = {}
-        self.pairwise_conflicts = {}
-        self.pairwise_similarities = {}
-
-    def analyze(self, losses: List[torch.Tensor]) -> None:
-        if len(losses) != len(self.loss_names):
-            raise ValueError("Number of losses must match number of loss names")
-
-        # rate test
-        if not self.enabled or np.random.rand() > self.rate:
-            return
-
-        grads = self._compute_grad(losses)
-        self._analyze_conflicts(grads)
-
-    def _compute_grad(self, losses: List[torch.Tensor]) -> List[Dict[str, torch.Tensor]]:
-        grads = []
-        for loss in losses:
-            self.model.zero_grad()
-            loss.backward(retain_graph=True)
-            grad_dict = {name: param.grad.clone() for name, param in self.model.named_parameters() if
-                         param.grad is not None}
-            grads.append(grad_dict)
-        return grads
-
-    def _analyze_conflicts(self, grads: List[Dict[str, torch.Tensor]]) -> None:
-        num_losses = len(grads)
-
-        for (i, j) in combinations(range(num_losses), 2):
-            conflict_key = self._get_conflict_key(i, j)
-            g_i, g_j = grads[i], grads[j]
-
-            similarity = self._compute_similarity(g_i, g_j)
-
-            self.total_interactions += 1
-            self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
-            self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [similarity]
-
-            if similarity < -self.conflict_threshold:
-                self.total_conflicts += 1
-                self.pairwise_conflicts[conflict_key] = self.pairwise_conflicts.get(conflict_key, 0) + 1
-
-    @staticmethod
-    def _compute_similarity(grad1: Dict[str, torch.Tensor], grad2: Dict[str, torch.Tensor]) -> float:
-        dot_product = 0
-        norm1 = 0
-        norm2 = 0
-        for name in grad1.keys():
-            if name in grad2:
-                g1, g2 = grad1[name], grad2[name]
-                dot_product += torch.sum(g1 * g2).item()
-                norm1 += torch.sum(g1 * g1).item()
-                norm2 += torch.sum(g2 * g2).item()
-
-        if norm1 == 0 or norm2 == 0:
-            return 0
-        return dot_product / (np.sqrt(norm1) * np.sqrt(norm2))
-
-    def _get_conflict_key(self, i: int, j: int) -> Tuple[str, str]:
-        return self.loss_names[i], self.loss_names[j]
-
-    def report(self) -> Tuple[Dict[str, float], pd.DataFrame]:
-        overall_conflict_rate = self.total_conflicts / max(1, self.total_interactions)
-
-        report_dict = {'total_interactions': self.total_interactions, 'total_conflicts': self.total_conflicts,
-                       'overall_conflict_rate': overall_conflict_rate, 'pairwise_data': {}}
-
-        df_data = []
-
-        for (loss1, loss2), interactions in self.pairwise_interactions.items():
-            conflicts = self.pairwise_conflicts.get((loss1, loss2), 0)
-            similarities = self.pairwise_similarities[(loss1, loss2)]
-            avg_similarity = np.mean(similarities)
-            conflict_rate = conflicts / interactions if interactions > 0 else 0
-
-            if avg_similarity > self.conflict_threshold:
-                relationship = "Strongly Cooperative"
-            elif avg_similarity > 0:
-                relationship = "Weakly Cooperative"
-            elif avg_similarity > -self.conflict_threshold:
-                relationship = "Weakly Conflicting"
-            else:
-                relationship = "Strongly Conflicting"
-
-            report_dict['pairwise_data'][(loss1, loss2)] = {'interactions': interactions, 'conflicts': conflicts,
-                                                            'conflict_rate': conflict_rate,
-                                                            'avg_similarity': avg_similarity,
-                                                            'relationship': relationship}
-
-            df_data.append({'loss1': loss1, 'loss2': loss2, 'interactions': interactions, 'conflicts': conflicts,
-                            'conflict_rate': conflict_rate, 'avg_similarity': avg_similarity,
-                            'relationship': relationship})
-
-        df = pd.DataFrame(df_data)
-        df = df.sort_values('avg_similarity').reset_index(drop=True)
-
-        return report_dict, df
-
-    def print_report(self) -> None:
-        report_dict, df = self.report()
-        print(f"Loss Interaction Analysis Report:")
-        print(f"Total interactions: {report_dict['total_interactions']}")
-        print(f"Total conflicts: {report_dict['total_conflicts']}")
-        print(f"Overall conflict rate: {report_dict['overall_conflict_rate']:.4f}")
-        print(f"\nPairwise Statistics (sorted by similarity):")
-
-        def color_cells(val, column):
-            if column == 'relationship':
-                colors = {"Strongly Cooperative": "color: green", "Weakly Cooperative": "color: green",
-                          "Weakly Conflicting": "color: coral", "Strongly Conflicting": "color: red"}
-                return colors.get(val, "")
-            elif column == 'avg_similarity':
-                if val > self.conflict_threshold:
-                    return 'color: green'
-                elif val > 0:
-                    return 'color: green'
-                elif val > -self.conflict_threshold:
-                    return 'color: coral'
-                else:
-                    return 'color: red'
-            return ''
-
-        styled_df = df.style.apply(lambda x: [color_cells(xi, col) for xi, col in zip(x, x.index)], axis=1).format(
-            {'interactions': '{:.0f}', 'conflicts': '{:.0f}', 'conflict_rate': '{:.4f}', 'avg_similarity': '{:.4f}'})
-
-        display(styled_df)
-        save_df_to_csv(df, "loss_interaction_report.csv")
-
-    def plot_correlation_matrix(self):
-        _, df = self.report()
-
-        # Create a square matrix of similarities
-        matrix_size = len(self.loss_names)
-        sim_matrix = np.ones((matrix_size, matrix_size))
-
-        for _, row in df.iterrows():
-            i = self.loss_names.index(row['loss1'])
-            j = self.loss_names.index(row['loss2'])
-            sim_matrix[i, j] = sim_matrix[j, i] = row['avg_similarity']
-
-        # Create a mask for the upper triangle
-        mask = np.triu(np.ones_like(sim_matrix, dtype=bool))
-
-        # Set up the matplotlib figure
-        fig, ax = plt.subplots()
-
-        # Create colormap
-        cmap = sns.diverging_palette(10, 220, as_cmap=True)
-
-        # Draw the heatmap with the mask and correct aspect ratio
-        sns.heatmap(sim_matrix, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0, square=True, linewidths=.5,
-                    cbar_kws={"shrink": .5}, annot=True,
-                    xticklabels=self.loss_names, fmt='.2f', yticklabels=self.loss_names)
-
-        # Add relationship annotations
-        for i in range(matrix_size):
-            for j in range(i + 1, matrix_size):
-                if not mask[i, j]:
-                    similarity = sim_matrix[i, j]
-                    if similarity > self.conflict_threshold:
-                        relationship = "SC"  # Strongly Cooperative
-                    elif similarity > 0:
-                        relationship = "WC"  # Weakly Cooperative
-                    elif similarity > -self.conflict_threshold:
-                        relationship = "WF"  # Weakly Conflicting
-                    else:
-                        relationship = "SF"  # Strongly Conflicting
-                    ax.text(j + 0.5, i + 0.5, relationship, ha='center', va='center', color='black',
-                            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-
-        plt.title("Loss Interaction Matrix")
-        plt.tight_layout()
-        save_figure("loss_interaction.pdf")
-        plt.show()

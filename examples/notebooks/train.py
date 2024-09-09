@@ -9,6 +9,7 @@ import medmnist
 import numpy as np
 import torch
 import torchinfo
+from matplotlib import pyplot as plt
 from medmnist import INFO
 from torch.utils.data import DataLoader, TensorDataset
 from torchvision.datasets import MNIST, FashionMNIST
@@ -21,27 +22,42 @@ from polcanet import PolcaNet
 from polcanet.aencoders import ConvEncoder, LinearDecoder
 from polcanet.utils import perform_pca
 
-# Redefine plt.show() to do nothing
-# plt.show = lambda: None
-
 torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.profile(False)
 torch.autograd.profiler.emit_nvtx(False)
 
 
+def in_jupyterlab():
+    try:
+        from IPython import get_ipython
+        from ipywidgets.widgets import Output, Accordion
+        return get_ipython().__class__.__name__ == 'ZMQInteractiveShell'
+    except ImportError:
+        # Redefine plt.show() to do nothing
+        plt.show = lambda: None
+        return False
+
+
 def train(params):
     """Train the POLCA-Net model on the given dataset."""
+    # Create an accordion for the experiment with three parts: preamble, training, train, test each one with its respective output
+
     setup_environment(params)
-
     exp = setup_experiment(params)
-
     X, X_test, y, y_test, labels = prepare_data(params)
-
     batch_size, epoch_list, lr_schedule = process_parameters_and_defaults(X, params)
 
     pca = perform_pca(X, n_components=params.n_components, title=f"PCA on {params.name} dataset")
+    # Add more experiment data to Experiment Tracking
 
-    model = create_polca_model(X[0].shape, pca.n_components, labels, params)
+    exp_vars = {
+            "pca_n_components": pca.n_components,
+
+    }
+    exp.add_extra_args(**exp_vars)
+
+    model = create_polca_model(experiment=exp, input_dim=X[0].shape, latent_dim=pca.n_components, labels=labels,
+                               params=params)
     model.to(params.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr_schedule[0], weight_decay=1e-1)
 
@@ -51,7 +67,6 @@ def train(params):
         train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer=optimizer)
 
     analyze_and_report_results(X, X_test, y, y_test, model, pca, params)
-
     cleanup_resources(model)
 
 
@@ -78,6 +93,7 @@ def setup_experiment(params):
                                    random_seed=params.seed,
                                    experiment_dir=params.exp_dir)
 
+    exp.add_extra_args(**vars(params))
     ut.set_save_fig(True)
     ut.set_save_path(str(exp.get_experiment_folder()))
 
@@ -130,22 +146,23 @@ def process_parameters_and_defaults(dataset, params):
     params.n_components = params.n_components or max(
         (image_height * params.n_channels * params.n_components_multiplier) // 2, 8)
 
-    lr_schedule = [1e-3, 1e-4, 1e-5] if params.n_channels == 1 else [1e-4, 1e-4, 1e-5]
-    epoch_list = [num_epochs, num_epochs, num_epochs // 2] if params.epochs is None else [params.epochs] * 3
+    lr_schedule = [1e-3, 1e-4, 1e-5]  # if params.n_channels == 1 else [1e-4, 1e-4, 1e-5]
+    epoch_list = [num_epochs, num_epochs, num_epochs] if params.epochs is None else [params.epochs] * 3
 
     return batch_size, epoch_list, lr_schedule
 
 
-def create_polca_model(input_dim, latent_dim, labels, params):
+def create_polca_model(experiment, input_dim, latent_dim, labels, params):
     """Create and return the POLCA-Net model."""
+    act_fn = torch.nn.GELU
     encoder = ConvEncoder(
         input_channels=params.n_channels,
         latent_dim=latent_dim,
         conv_dim=2,
         initial_channels=16 * params.n_channels,
         growth_factor=2,
-        num_layers=5,
-        act_fn=torch.nn.GELU,
+        num_layers=4,
+        act_fn=act_fn,
         size=max(max(input_dim), 28),
     )
 
@@ -153,8 +170,8 @@ def create_polca_model(input_dim, latent_dim, labels, params):
         latent_dim=latent_dim,
         input_dim=input_dim,
         hidden_dim=4 * 256 if not params.linear else 10 * 256,
-        num_layers=4 if not params.linear else 2,
-        act_fn=torch.nn.GELU if not params.linear else None,
+        num_layers=3 if not params.linear else 2,
+        act_fn=act_fn if not params.linear else torch.nn.Identity,
         bias=False,
         output_act_fn=None,
     )
@@ -164,14 +181,22 @@ def create_polca_model(input_dim, latent_dim, labels, params):
     alpha = 1e-2
     beta = 1e-2
     gamma = 1e-6
-    delta = 0
+
     if params.with_labels:
         r = 1.0
-        c = 1e-2
-        alpha = 1
-        beta = 1
+        c = 1e-1
+        alpha = 1.0
+        beta = 1.0
         gamma = 1e-6
-        delta = 0
+
+    extra_args = {
+            "r": r,
+            "c": c,
+            "alpha": alpha,
+            "beta": beta,
+            "gamma": gamma,
+    }
+    experiment.add_extra_args(**extra_args)
 
     model = PolcaNet(
         encoder=encoder,
@@ -182,7 +207,6 @@ def create_polca_model(input_dim, latent_dim, labels, params):
         alpha=alpha,  # orthogonality loss weight
         beta=beta,  # variance sorting loss weight
         gamma=gamma,  # variance reduction loss weight
-        delta=delta,  # instance orthogonality loss weight  *experimental*
         class_labels=labels,  # class labels for supervised in case labels is not None
     )
 
@@ -209,7 +233,7 @@ def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, para
     for lr, epochs in zip(lr_schedule, epoch_list):
         # Update learning rate
         for param_group in optimizer.param_groups:
-            param_group['lr'] = 0.01
+            param_group['lr'] = lr
         model.train_model(train_data_loader, num_epochs=epochs, lr=lr, optimizer=optimizer)
 
 
@@ -226,15 +250,12 @@ def train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer)
 def analyze_and_report_results(X, X_test, y, y_test, model, pca, params):
     """Analyze and report the results of the training."""
 
-    ut.set_fig_prefix("")
-    model.loss_analyzer.print_report()
-    model.loss_analyzer.plot_correlation_matrix()
-
+    report.loss_interaction_analysis(model)
     for prefix, data, targets in [("train", X, y), ("test", X_test, y_test)]:
         ut.set_fig_prefix(prefix)
         # report.analyze_reconstruction_error(model, data)
-        images = data[:25]
-        ut.plot_reconstruction_comparison(model, pca, images, cmap="gray", nrow=5)
+        images = data[:9]
+        ut.plot_reconstruction_comparison(model, pca, images, cmap="gray", nrow=3)
         report.orthogonality_test_analysis(model, pca, data)
         report.variance_test_analysis(model, data)
         report.linearity_tests_analysis(model, data, alpha_min=0, num_samples=200)
@@ -297,7 +318,7 @@ def get_medmnist_dataset(name, size=28):
     os.makedirs(Path(f"data/{name}").absolute(), exist_ok=True)
     train_set = dataset(root=Path(f"data/{name}").absolute(), split='train', download=True, size=size)
     test_set = dataset(root=Path(f"data/{name}").absolute(), split='test', download=True, size=size)
-    print(train_set)
+    # print(train_set)
 
     # Normalize the dataset format
     train_set.data = train_set.imgs
@@ -308,10 +329,10 @@ def get_medmnist_dataset(name, size=28):
     n_channels = 3 if 3 in set(train_set.data.shape) else 1
 
     if n_channels == 3:
-        print("Converting to RGB")
+        # print("Converting to RGB")
         train_set.data = ut.convert_to_rgb_and_reshape(train_set.data)
         test_set.data = ut.convert_to_rgb_and_reshape(test_set.data)
-        print(train_set.data.shape, test_set.data.shape)
+        # print(train_set.data.shape, test_set.data.shape)
 
     # Normalize the data pixel values to [0, 1]
     train_set.data = train_set.data / 255.0
@@ -333,8 +354,8 @@ def train_on_datasets(params):
             train_set, test_set = get_medmnist_dataset(name, size=params.size)
             params.n_channels = INFO[name]['n_channels']
 
-        print(f"Dataset: {name}\nTrain set: {len(train_set)}\nTest set: {len(test_set)}")
-        print(f"Data shape, train: {train_set.data.shape}, test: {test_set.data.shape}")
+        # print(f"Dataset: {name}\nTrain set: {len(train_set)}\nTest set: {len(test_set)}")
+        # print(f"Data shape, train: {train_set.data.shape}, test: {test_set.data.shape}")
 
         params.name = name
         params.train_set = train_set
@@ -367,17 +388,6 @@ torch_dataset_dict_labels = {
                 7: "Sneaker",
                 8: "Bag",
                 9: "Ankle boot", },
-        "cifar10": {
-                0: "airplane",
-                1: "automobile",
-                2: "bird",
-                3: "cat",
-                4: "deer",
-                5: "dog",
-                6: "frog",
-                7: "horse",
-                8: "ship",
-                9: "truck", },
         "bent": None,
         "sinusoidal": None,
 }
@@ -394,6 +404,7 @@ medmnist_datasets_dict = {
         "retinamnist": medmnist.RetinaMNIST,
         "bloodmnist": medmnist.BloodMNIST,
         "chestmnist": medmnist.ChestMNIST,
+        "tissuemnist": medmnist.TissueMNIST,
 }
 
 datasets_dict = {**torch_datasets_dict, **medmnist_datasets_dict}
@@ -403,8 +414,9 @@ for name in medmnist_datasets_dict:
     dataset_dict_labels[name] = {int(k): v for k, v in INFO[name]['label'].items()}
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--datasets", type=str, default=[], nargs="+", help="datasets to train the model on")
+    parser.add_argument("--datasets", type=str, default=[], choices=list(dataset_dict_labels), nargs="+", help="datasets to train the model on")
     parser.add_argument("--epochs", type=int, default=None, help="number of epochs")
     parser.add_argument("--n_updates", type=int, default=20000, help="number of gradient updates")
     parser.add_argument("--device", type=str, default="cuda", help="device to train the model on")

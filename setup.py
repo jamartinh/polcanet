@@ -6,7 +6,8 @@ setup(
     packages=['polcanet'],
     url='',
     license='',
-    author='Jose Antonio Martin H.',
+    author='anonymous',
     author_email='',
-    description=''
+    description='',
+
 )

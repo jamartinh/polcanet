@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import scienceplots
 import seaborn as sns
 import torch
+from IPython.core.pylabtools import figsize
 from IPython.display import display
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -19,16 +19,15 @@ from sklearn.preprocessing import StandardScaler
 import polcanet.mlutils
 from polcanet.mlutils import ReducedPCA, run_classification_pipeline
 
-# Filter out specific warnings
-# warnings.filterwarnings("ignore", category=DataConversionWarning)
-# warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
-# # Suppress NumPy's "RuntimeWarning: Mean of empty slice"
-# warnings.filterwarnings("ignore", message="Mean of empty slice")
-# # also for Sample size too small for normal approximation.
-# warnings.filterwarnings("ignore", message="Sample size too small for normal approximation.")
+try:
+    import scienceplots
 
-sp_path = scienceplots.scienceplots_path
-plt.style.use(["science", "no-latex"])
+    sp_path = scienceplots.scienceplots_path
+    plt.style.use(["science", "no-latex"])
+except ImportError:
+    scienceplots = None
+    sp_path = None
+    print("scienceplots style library not found, default matplotlib style will be used.")
 
 # Query the current default figure size
 current_fig_size = plt.rcParams["figure.figsize"]
@@ -214,10 +213,9 @@ def show_image(ax, img, cmap=None):
 
 
 # Function to visualize output images horizontally
-def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", nrow=5, padding=0,
-                                   save_fig: str = None):
+def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", nrow=5, padding=0, save_fig=None):
     # Create a figure for all visualizations to be displayed horizontally
-    fig, axs = plt.subplots(1, len(reconstructed_list), )
+    fig, axs = plt.subplots(1, len(reconstructed_list), figsize=(len(reconstructed_list)*3.5, 3.5))
     fig.subplots_adjust(wspace=0.01)
     # if ax is non-iterable put it inside a list
     if not isinstance(axs, np.ndarray):
@@ -231,13 +229,13 @@ def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", 
         if title:
             ax.set_title(title)
 
-    plt.tight_layout()
     fig_name = save_fig or "reconstructed_images.pdf"
     save_figure(fig_name)
     plt.show()
 
 
-def plot_reconstruction_comparison(model, pca, images, n_components=None,mask=None, cmap="viridis", nrow=5, no_title=False,
+def plot_reconstruction_comparison(model, pca, images, n_components=None, mask=None, cmap="viridis", nrow=5,
+                                   no_title=False,
                                    show_only_reconstruction=False):
     n_components = n_components or pca.n_components
 
@@ -442,10 +440,9 @@ def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
     else:
         unique_classes = np.unique(y[:, 0])
 
-
     for cls in unique_classes:
         ix = np.where(y == cls)
-        ax.scatter(X[ix, 0], X[ix, 1],s=5, alpha=0.25, label=labels_dict[cls] if labels_dict else cls)
+        ax.scatter(X[ix, 0], X[ix, 1], s=5, alpha=0.25, label=labels_dict[cls] if labels_dict else cls)
 
     # Add axis labels and title
     ax.set_xlabel("Component 0")
@@ -576,7 +573,7 @@ class ExperimentInfoHandler:
 
     def add_extra_args(self, **kwargs):
         # add extra args to the experiment json
-        self.extra_args.update(kwargs)
+        self.extra_args.update({k: v for k, v in kwargs.items() if isinstance(v, (int, float, str))})
         with open(self.experiment_folder / "experiment_info.json", "r") as f:
             info = json.load(f)
         info.update(self.extra_args)
@@ -641,6 +638,46 @@ def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
     return images
 
 
+# Modified bent function to generate images with discrete labels based on function index modulo 5
+def generate_binary_bent_batch_with_discrete_labels(M, N):
+    # Calculate number of bits needed for each axis (log2(N))
+    num_bits = int(np.log2(N))
+
+    # Function to generate a bent image for a given index (to vary the function for each image)
+    def bent_function_general(index, *bits):
+        # Apply XOR and AND operations, adjusting based on available bits
+        result = index % 2
+        for i in range(0, num_bits - 1):  # Fix the range to avoid out-of-bounds access
+            result ^= (bits[i] ^ bits[i + num_bits] ^ (index % 3)) & (bits[i + 1] ^ bits[i + num_bits - 1])
+        return result
+
+    # Create a batch of M NxN grids to hold the bent function outputs
+    batch = np.zeros((M, N, N))
+    labels = []
+
+    # Generate M different images and assign discrete labels
+    for m in range(M):
+        black_pixel_count = 0  # Count the number of black pixels (representing 1s)
+
+        # Fill the grid based on the bent function for each image in the batch
+        for i in range(N):
+            for j in range(N):
+                # Convert i and j into binary representation with num_bits bits
+                x_bits = [(i >> bit) & 1 for bit in range(num_bits)]
+                y_bits = [(j >> bit) & 1 for bit in range(num_bits)]
+
+                # Combine the bits into a single tuple and apply the bent function for the m-th image
+                batch[m, i, j] = bent_function_general(m, *x_bits, *y_bits)
+                if batch[m, i, j] == 1:
+                    black_pixel_count += 1
+
+        # Generate a label based on function index modulo 5 to assign 5 discrete classes
+        class_label = m % 5
+        labels.append(class_label)
+
+    return batch, labels
+
+
 class FakeDataset:
     def __init__(self):
         self.data = None
@@ -672,6 +709,17 @@ def sinusoidal(root, train=True, download=True, transform=None, n=32, m=32):
         dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=1000) * 255
 
     dataset.targets = np.zeros(len(dataset.data))
+    return dataset
+
+
+def binary_bent(root, train=True, download=True, transform=None, n=32, m=32):
+    # Generate 2D binary bent function images data
+    dataset = FakeDataset()
+    if train:
+        dataset.data, dataset.targets = generate_binary_bent_batch_with_discrete_labels(3000, n)
+    else:
+        dataset.data, dataset.targets = generate_binary_bent_batch_with_discrete_labels(1000, n)
+
     return dataset
 
 
@@ -790,5 +838,13 @@ def make_classification_report(model, pca, X, y, X_test, y_test, n_components=No
 def perform_pca(X, n_components, title="PCA"):
     """Perform PCA on the training dataset."""
     total_pca, pca = polcanet.mlutils.get_pca(X, n_components=n_components)
-    plot_components_cdf(total_pca, title=title, n_components=n_components)
+    plot_components_cdf(total_pca, title=title, n_components=pca.n_components)
     return pca
+
+
+class FakeContextManager:
+    def __enter__(self, *args, **kwargs):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass

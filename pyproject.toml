@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polcanet"
+version = "0.1.0"
+description = "POLCANET: Principal Orthogonal Latent Components Analysis Network"
+authors = [{ name = "", email = "your.email@example.com" }]
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "scikit-learn",
+    "torch",
+    "tqdm",
+    "scikit-image",
+    "scienceplots",
+    "seaborn",
+    "torchvision",
+    "torchinfo",
+    "polcanet",
+    "medmnist",
+    "pillow",
+    "joblib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.2.3",
+    "black>=21.5b1",
+
+]
+
+[tool.setuptools.packages.find]
+where = ["."]  # list of folders that contain the packages (["."] by default)
+#include = ["your_package_name*"]  # package names should match these glob patterns (["*"] by default)
+#exclude = ["your_package_name.tests*"]  # exclude packages matching these glob patterns (empty by default)
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]

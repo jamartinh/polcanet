@@ -1,19 +1,19 @@
-numpy
-pandas
-matplotlib
-scipy
-scikit-learn
 torch
+numpy
+scipy
 tqdm
-setuptools
-ipython
-scikit-image
-scienceplots
-seaborn
-torchvision
-torchinfo
-polcanet
-medmnist
-pillow
-joblib
-scikit-lego
+pandas
+joblib  # optional for reports
+matplotlib  # optional for reports
+scikit-learn # optional for reports
+scikit-image # optional for reports
+seaborn # optional for reports
+
+jupyterlab  # optional for reproducibility
+ipython    # optional for reproducibility
+scienceplots # optional for reproducibility
+torchvision  # optional for reproducibility
+torchinfo # optional for reproducibility
+medmnist # optional for reproducibility
+pillow  # optional for reproducibilityº
+
