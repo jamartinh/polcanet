@@ -97,15 +97,16 @@ def plot_scatter_corr_matrix(model=None, latents=None, data=None, n_components=5
 def plot_lower_triangular_mutual_information(mi_matrix, title='Pairwise Mutual Information', save_fig: str = None):
     threshold = 10
 
-    # Mask for the upper triangle (to hide it)
+    # Mask for the upper triangle (to hide it) but keep the diagonal
     mask = np.triu(np.ones_like(mi_matrix, dtype=bool))
+
     # Setup the matplotlib figure
     fig, ax = plt.subplots()
 
     # Generate a custom diverging colormap
     # cmap = sns.diverging_palette(220, 10, as_cmap=True)
     # Get Matplotlib Grays color map
-    cmap = plt.get_cmap('Greys')
+    cmap = plt.get_cmap('binary')
 
     # Draw the heatmap with the mask and correct aspect ratio
     sns.heatmap(mi_matrix, mask=mask, cmap=cmap, vmax=1.0, vmin=0, center=0.5, square=True, linewidths=.5,
@@ -128,10 +129,8 @@ def calculate_mutual_information(latent_x):
     mi_matrix = np.zeros((n_features, n_features))
 
     def calculate_mi(x, i, j):
-        if i != j:
-            _mi = mutual_info_regression(np.expand_dims(x[:, i], axis=1), x[:, j])[0]
-            return i, j, _mi
-        return i, j, 0
+        _mi = mutual_info_regression(np.expand_dims(x[:, i], axis=1), x[:, j])[0]
+        return i, j, _mi
 
     # Calculate pairwise MI in parallel
     results = Parallel(n_jobs=20)(delayed(calculate_mi)(latent_x, i, j) for i, j in combinations(range(n_features), 2))
@@ -226,7 +225,7 @@ def plot_correlation_matrix(corr_matrix, threshold=10, save_fig: str = None):
 
     # Generate a custom diverging colormap
     # cmap = sns.diverging_palette(220, 10, as_cmap=True)
-    cmap = plt.get_cmap('Greys')
+    cmap = plt.get_cmap('binary')
 
     # Draw the heatmap with the mask and correct aspect ratio
     sns.heatmap(corr_matrix, mask=mask, cmap=cmap, vmax=1.0, vmin=0, center=0.5, square=True, linewidths=.5,
@@ -470,7 +469,7 @@ def linearity_test_plot(model, x, y, alpha_min=-1, alpha_max=1, save_fig: str = 
         # lipschitz_corr = np.corrcoef(diff_fxy, diff_xy)[0, 1]
 
     # take a random sample of size at most 1000 of xx and yy since this is a heavy scatter plot
-    indices = np.random.choice(xx.shape[0], max(5 * num_samples, xx.shape[0]), replace=False)
+    indices = np.random.choice(xx.shape[0], min(5 * num_samples, xx.shape[0]), replace=False)
     xx = xx[indices]
     yy = yy[indices]
     add_colors = alpha_colors[indices]

@@ -1,22 +1,24 @@
+import warnings
+
 import numpy as np
 import pandas as pd
-import sklearn
 import torch
 from joblib import Parallel, delayed
 from sklearn import decomposition
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression, RidgeClassifier, Perceptron
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from sklearn.multioutput import MultiOutputClassifier
-from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import SVC
 from torch import nn as nn
-import warnings
-from sklearn.exceptions import ConvergenceWarning
+
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
+
 def get_pca(x, n_components=None):
+    x_pca_input = np.squeeze(x.reshape(x.shape[0], -1))
     total_pca = decomposition.PCA()
-    total_pca.fit(np.squeeze(x.reshape(x.shape[0], -1)))
+    total_pca.fit(x_pca_input)
     # Compute cumulative explained variance ratio
     cumulative_variance_ratio = np.cumsum(total_pca.explained_variance_ratio_)
     if n_components is not None and n_components < 1.0:
@@ -34,8 +36,14 @@ def get_pca(x, n_components=None):
     return total_pca, pca
 
 
-def train_and_evaluate(clf, X_train, X_test, y_train, y_test, name, method):
-    clf = sklearn.clone(clf)
+def train_and_evaluate(name, X_train, X_test, y_train, y_test, method):
+    classifiers = {
+            "Logistic Regression": LogisticRegression(solver="saga", n_jobs=8),
+            "Linear SVM": SVC(kernel="linear"),
+            "Ridge Classifier": RidgeClassifier(),
+            "Perceptron": Perceptron(n_jobs=8),
+    }
+    clf = classifiers[name]
 
     if y_train.ndim > 1 and y_train.shape[1] > 1:
         clf = MultiOutputClassifier(clf)
@@ -60,26 +68,24 @@ def train_and_evaluate(clf, X_train, X_test, y_train, y_test, name, method):
 
 
 def run_classification_pipeline(X_train_pca, X_test_pca, X_train_polca, X_test_polca, y_train, y_test):
-    classifiers = {
-            "Logistic Regression": LogisticRegression(solver="saga"),
-            # "Gaussian Naive Bayes": GaussianNB(),
-            "Linear SVM": SVC(kernel="linear"),
-            "Ridge Classifier": RidgeClassifier(),
-            "Perceptron": Perceptron(),
-    }
-
+    classifiers = [
+            "Logistic Regression",
+            "Linear SVM",
+            "Ridge Classifier",
+            "Perceptron",
+    ]
     tasks = [
-            (clf, X_train, X_test, name, method)
-            for name, clf in classifiers.items()
+            (name, X_train, X_test, method)
+            for name in classifiers
             for (X_train, X_test, method) in [
                     (X_train_pca, X_test_pca, "PCA"),
                     (X_train_polca, X_test_polca, "POLCA")
             ]
     ]
 
-    results = Parallel(n_jobs=-1)(
-        delayed(train_and_evaluate)(clf, X_train, X_test, y_train, y_test, name, method)
-        for clf, X_train, X_test, name, method in tasks
+    results = Parallel(n_jobs=-1, require="sharedmem")(
+        delayed(train_and_evaluate)(name, X_train, X_test, y_train, y_test, method)
+        for name, X_train, X_test, method in tasks
     )
 
     return pd.DataFrame([item for sublist in results for item in sublist])

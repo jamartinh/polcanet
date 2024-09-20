@@ -4,10 +4,12 @@ import gc
 import os
 import random
 from pathlib import Path
+from pprint import pprint
 
 import medmnist
 import numpy as np
 import torch
+import torch.nn as nn
 import torchinfo
 from matplotlib import pyplot as plt
 from medmnist import INFO
@@ -19,12 +21,13 @@ import polcanet.reports as report
 import polcanet.utils
 import polcanet.utils as ut
 from polcanet import PolcaNet
-from polcanet.aencoders import ConvEncoder, LinearDecoder
+from polcanet.aencoders import ConvEncoder, LinearDecoder, LSTMDecoder
 from polcanet.utils import perform_pca
 
 torch.autograd.set_detect_anomaly(False)
 torch.autograd.profiler.profile(False)
 torch.autograd.profiler.emit_nvtx(False)
+torch.backends.cudnn.benchmark = True
 
 
 def in_jupyterlab():
@@ -44,7 +47,7 @@ def train(params):
 
     setup_environment(params)
     exp = setup_experiment(params)
-    X, X_test, y, y_test, labels = prepare_data(params)
+    X, X_test, y, y_test, labels = prepare_data(params, exp)
     batch_size, epoch_list, lr_schedule = process_parameters_and_defaults(X, params)
 
     pca = perform_pca(X, n_components=params.n_components, title=f"PCA on {params.name} dataset")
@@ -52,6 +55,9 @@ def train(params):
 
     exp_vars = {
             "pca_n_components": pca.n_components,
+            "batch_size": batch_size,
+            "epoch_list": tuple(epoch_list),
+            "lr_schedule": tuple(lr_schedule),
 
     }
     exp.add_extra_args(**exp_vars)
@@ -59,12 +65,14 @@ def train(params):
     model = create_polca_model(experiment=exp, input_dim=X[0].shape, latent_dim=pca.n_components, labels=labels,
                                params=params)
     model.to(params.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr_schedule[0], weight_decay=1e-1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr_schedule[0], weight_decay=1e-2, betas=(0.9, 0.99), eps=1e-6)
 
     if params.use_dataloader:
-        train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params.params, optimizer=optimizer)
+        train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params.params, optimizer=optimizer,
+                              X_val=X_test, y_val=y_test)
     else:
-        train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer=optimizer)
+        train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer=optimizer, X_val=X_test,
+                        y_val=y_test)
 
     analyze_and_report_results(X, X_test, y, y_test, model, pca, params)
     cleanup_resources(model)
@@ -104,7 +112,7 @@ def setup_experiment(params):
     return exp
 
 
-def prepare_data(params):
+def prepare_data(params, exp):
     """Prepare and preprocess the dataset."""
     X = np.array(params.train_set.data, dtype=np.float32).squeeze()
     X_test = np.array(params.test_set.data, dtype=np.float32).squeeze()
@@ -112,19 +120,30 @@ def prepare_data(params):
     y_test = params.test_set.targets
     labels = list(params.labels_dict.keys()) if params.with_labels and params.labels_dict else None
 
-    print(f"Data range: [{X.min()}, {X.max()}]")
-    print(f"Train dataset: {X.shape}, Test dataset: {X_test.shape}")
-    print(f"Train targets: {y.shape}, Test labels: {y_test.shape}")
-    print(f"Unique targets: {labels}")
-    print(f"Class labels: {params.labels_dict}")
+    pprint(f"Data range: [{X.min()}, {X.max()}]")
+    pprint(f"Train dataset: {X.shape}, Test dataset: {X_test.shape}")
+    pprint(f"Train targets: {y.shape}, Test labels: {y_test.shape}")
+    pprint(f"Unique targets: {labels}")
+    pprint(f"Class labels: {params.labels_dict}")
     if len(np.unique(y)) > 1 and np.squeeze(y).ndim == 1:
         #  calculate and print information on class distribution and balance
-        print("Class balance:")
+        pprint("Class balance:")
         for label, name in params.labels_dict.items():
             count = np.sum(y == label)
-            print(f"{name}: {count / len(y) * 100:.2f}%")
+            pprint(f"{name}: {count / len(y) * 100:.2f}%")
 
     print(f"Number of components: {params.n_components}")
+
+    # Add all the information to a dictionary and save it to the experiment using add_extra_args
+    data_dict_exp = {
+            "Data range": (float(X.min()), float(X.max())),
+            "Train dataset shape": tuple((int(e) for e in X.shape)),
+            "Test dataset shape": tuple((int(e) for e in X_test.shape)),
+            "Train targets shape": tuple((int(e) for e in y.shape)),
+            "Test targets shape": tuple((int(e) for e in y_test.shape)),
+            "Unique targets": tuple(labels or (None,)),
+    }
+    exp.add_extra_args(**data_dict_exp)
 
     ut.set_fig_prefix("train")
     ut.plot_train_images(X, f"{params.name} train dataset images", cmap="gray", n=7)
@@ -146,48 +165,62 @@ def process_parameters_and_defaults(dataset, params):
     params.n_components = params.n_components or max(
         (image_height * params.n_channels * params.n_components_multiplier) // 2, 8)
 
-    lr_schedule = [1e-3, 1e-4, 1e-5]  # if params.n_channels == 1 else [1e-4, 1e-4, 1e-5]
-    epoch_list = [num_epochs, num_epochs, num_epochs] if params.epochs is None else [params.epochs] * 3
+    lr_schedule = (1e-3, 1e-4, 1e-5) if params.n_channels == 1 else (1e-4, 1e-4, 1e-5)
+    if params.with_labels:
+        lr_schedule = [1e-3] if params.n_channels == 1 else [1e-4]
+    epoch_list = [num_epochs] * 3 if params.epochs is None else [params.epochs] * 3
 
     return batch_size, epoch_list, lr_schedule
 
 
-def create_polca_model(experiment, input_dim, latent_dim, labels, params):
+def create_polca_model(experiment, input_dim, latent_dim, labels, params) -> PolcaNet:
     """Create and return the POLCA-Net model."""
-    act_fn = torch.nn.GELU
+    act_fn = nn.SiLU
+    min_image_size = 28
+    current_image_size = max(max(input_dim), min_image_size)
     encoder = ConvEncoder(
         input_channels=params.n_channels,
         latent_dim=latent_dim,
         conv_dim=2,
-        initial_channels=16 * params.n_channels,
+        initial_channels=32,
         growth_factor=2,
-        num_layers=4,
+        num_layers=6,
         act_fn=act_fn,
-        size=max(max(input_dim), 28),
+        size=current_image_size,
     )
 
-    decoder = LinearDecoder(
+    # decoder = LinearDecoder(
+    #     latent_dim=latent_dim,
+    #     input_dim=input_dim,
+    #     hidden_dim=12 * 256 if not params.linear else 15 * 256,
+    #     num_layers=3 if not params.linear else 1,
+    #     act_fn=nn.GELU if not params.linear else torch.nn.Identity,
+    #     bias=False,
+    # )
+
+    decoder = LSTMDecoder(
         latent_dim=latent_dim,
-        input_dim=input_dim,
-        hidden_dim=4 * 256 if not params.linear else 10 * 256,
-        num_layers=3 if not params.linear else 2,
-        act_fn=act_fn if not params.linear else torch.nn.Identity,
+        hidden_size=1024,
+        output_dim=input_dim,
+        num_layers=1,
+        proj_size=None,
         bias=False,
-        output_act_fn=None,
     )
 
-    r = 1.0
-    c = 0.0
-    alpha = 1e-2
-    beta = 1e-2
-    gamma = 1e-6
+    r = params.r if params.r is not None else 1
+    c = params.c if params.c is not None else 0
+    alpha = params.alpha if params.alpha is not None else 1e-1
+    beta = params.beta if params.beta is not None else 1e-1
+    gamma = params.gamma if params.gamma is not None else 0
+    std_noise = 0.0
 
     if params.with_labels:
-        r = 1.0
-        c = 1e-1
-        alpha = 1.0
-        beta = 1.0
-        gamma = 1e-6
+        r = params.r if params.r is not None else 1
+        c = params.c if params.c is not None else 1
+        alpha = params.alpha if params.alpha is not None else 1e-1
+        beta = params.beta if params.beta is not None else 1e-1
+        gamma = params.gamma if params.gamma is not None else 0
+        std_noise = 0.0
 
     extra_args = {
             "r": r,
@@ -195,6 +228,7 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params):
             "alpha": alpha,
             "beta": beta,
             "gamma": gamma,
+            "std_noise": std_noise
     }
     experiment.add_extra_args(**extra_args)
 
@@ -208,43 +242,62 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params):
         beta=beta,  # variance sorting loss weight
         gamma=gamma,  # variance reduction loss weight
         class_labels=labels,  # class labels for supervised in case labels is not None
+        std_noise=std_noise  # standard deviation of the noise
     )
 
-    print(model)
+    pprint(model)
     summary = torchinfo.summary(
-        model, (1, *input_dim), dtypes=[torch.float], verbose=1,
-        col_width=16, col_names=["kernel_size", "output_size", "num_params"], row_settings=["var_names"]
+        model, (1, *input_dim),
+        dtypes=[torch.float],
+        depth=1,
+        verbose=1,
+        col_width=16,
+        col_names=["num_params"],
+        row_settings=["var_names"],
     )
-
+    pprint(summary)
     ut.save_text(str(model), "model.txt")
     ut.save_text(str(summary), "model_summary.txt")
 
     return model
 
 
-def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params, optimizer):
+def train_with_dataloader(X, y, model, batch_size, lr_schedule, epoch_list, params, optimizer, X_val=None, y_val=None):
     """Train the model using DataLoader."""
     x_torch = torch.tensor(X, dtype=torch.float32)
     y_torch = torch.tensor(y, dtype=torch.int64) if params.with_labels else None
     train_data_set = TensorDataset(x_torch, y_torch) if params.with_labels else TensorDataset(x_torch)
     train_data_loader = DataLoader(train_data_set, batch_size=batch_size, shuffle=True, generator=params.generator,
-                                   num_workers=4, drop_last=True)
+                                   num_workers=4, drop_last=True, pin_memory=True)
 
     for lr, epochs in zip(lr_schedule, epoch_list):
         # Update learning rate
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-        model.train_model(train_data_loader, num_epochs=epochs, lr=lr, optimizer=optimizer)
+        model.train_model(data=train_data_loader,
+                          num_epochs=epochs,
+                          lr=lr,
+                          optimizer=optimizer,
+                          val_data=X_val,
+                          val_y=y_val,
+                          )
 
 
-def train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer):
+def train_in_memory(X, y, model, batch_size, lr_schedule, epoch_list, optimizer, X_val=None, y_val=None):
     """Train the model using in-memory data."""
     for lr, epochs in zip(lr_schedule, epoch_list):
         # Update learning rate
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        model.train_model(data=X, y=y, batch_size=batch_size, num_epochs=epochs, lr=lr, optimizer=optimizer)
+        model.train_model(data=X,
+                          y=y,
+                          batch_size=batch_size,
+                          num_epochs=epochs,
+                          lr=lr, optimizer=optimizer,
+                          val_data=X_val,
+                          val_y=y_val,
+                          )
 
 
 def analyze_and_report_results(X, X_test, y, y_test, model, pca, params):
@@ -274,6 +327,7 @@ def cleanup_resources(model):
     del model
     gc.collect()
     torch.cuda.empty_cache()
+    gc.collect()
 
 
 def get_dataset(name):
@@ -416,7 +470,8 @@ for name in medmnist_datasets_dict:
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--datasets", type=str, default=[], choices=list(dataset_dict_labels), nargs="+", help="datasets to train the model on")
+    parser.add_argument("--datasets", type=str, default=[], choices=list(dataset_dict_labels), nargs="+",
+                        help="datasets to train the model on")
     parser.add_argument("--epochs", type=int, default=None, help="number of epochs")
     parser.add_argument("--n_updates", type=int, default=20000, help="number of gradient updates")
     parser.add_argument("--device", type=str, default="cuda", help="device to train the model on")
@@ -432,6 +487,12 @@ if __name__ == "__main__":
     parser.add_argument("--size", type=int, default=28, choices=[28, 64, 128, 224],
                         help="MedMNIST image size")
     parser.add_argument("--exp_dir", type=str, default="experiments", help="experiments top directory")
+    # Add parameters c, r, alpha, beta , gamma for model creation
+    parser.add_argument("--c", type=float, default=None, help="classification weight")
+    parser.add_argument("--r", type=float, default=None, help="reconstruction weight")
+    parser.add_argument("--alpha", type=float, default=None, help="orthogonality loss weight")
+    parser.add_argument("--beta", type=float, default=None, help="variance sorting loss weight")
+    parser.add_argument("--gamma", type=float, default=None, help="variance reduction loss weight")
 
     parameters = parser.parse_args()
 

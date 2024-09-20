@@ -2,13 +2,14 @@ import json
 import os
 import sys
 from datetime import datetime
+from itertools import batched
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from IPython.core.pylabtools import figsize
+from IPython.core.display_functions import clear_output
 from IPython.display import display
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -215,7 +216,7 @@ def show_image(ax, img, cmap=None):
 # Function to visualize output images horizontally
 def visualise_reconstructed_images(reconstructed_list, title_list, cmap="gray", nrow=5, padding=0, save_fig=None):
     # Create a figure for all visualizations to be displayed horizontally
-    fig, axs = plt.subplots(1, len(reconstructed_list), figsize=(len(reconstructed_list)*3.5, 3.5))
+    fig, axs = plt.subplots(1, len(reconstructed_list), figsize=(len(reconstructed_list) * 3.5, 3.5))
     fig.subplots_adjust(wspace=0.01)
     # if ax is non-iterable put it inside a list
     if not isinstance(axs, np.ndarray):
@@ -252,7 +253,14 @@ def plot_reconstruction_comparison(model, pca, images, n_components=None, mask=N
     pca_reconstructed = r_pca.inverse_transform(pca_latents)
     pca_reconstructed = pca_reconstructed.reshape(images.shape)
 
-    title_list = ["Original", "POLCA-Net", "PCA"] if not no_title else ["", "", ""]
+    ae_nrmse = normalized_root_mse(images, ae_reconstructed)
+    pca_nrmse = normalized_root_mse(images, pca_reconstructed)
+    channel_axis = None if images[0].ndim == 2 else 0
+    # ae_ssim = structural_similarity(images, ae_reconstructed, data_range=1, channel_axis=channel_axis)
+    # pca_ssim = structural_similarity(images, pca_reconstructed, data_range=1, channel_axis=channel_axis)
+
+    title_list = ["Original", f"POLCA-Net rmse: {ae_nrmse:.2f}", f"PCA rmse: {pca_nrmse:.2f}"] if not no_title else [
+        "", "", ""]
     if show_only_reconstruction:
         reconstructed_list = [ae_reconstructed, pca_reconstructed]
     else:
@@ -365,9 +373,7 @@ def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
 
         # Transform the data using POLCA-Net but using batch_size since data could be large
         batch_size = min(1024, images.shape[0])
-        latents = np.concatenate([model.predict(images[i:i + batch_size], n_components=n_components)[0] for i in
-                                  range(0, len(images), batch_size)])
-        ae_reconstructed = model.decode(latents[:, :n_comps])
+        latents, ae_reconstructed = model.predict_batched(images, batch_size=batch_size, n_components=n_comps)
         if ae_reconstructed.ndim != images.ndim:
             ae_reconstructed = ae_reconstructed.reshape(images.shape)
 
@@ -385,7 +391,6 @@ def image_metrics_table(experiment_data: dict, n_components=None, kind=None):
     df_table = pd.concat(tables).set_index("Method")
     display(df_table)
     prefix = "_" + kind if kind else ""
-    # save_latex_table(df_table, f"image_metrics{prefix}.tex")
     save_df_to_csv(df_table, f"image_metrics{prefix}.csv")
     return df_table
 
@@ -407,32 +412,7 @@ def plot_train_images(x, title="", n=1, cmap="gray", save_fig=None):
     plt.show()
 
 
-# def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
-#
-#     print(labels_dict)
-#     fig, ax = plt.subplots()
-#     # Map numeric labels to text labels
-#     y = np.squeeze(y)
-#     labels_array = np.array([labels_dict[key] for key in sorted(labels_dict.keys())])
-#     # Use the y array to index into the labels_array
-#     print(labels_array)
-#     y_labels = labels_array[y] if labels_dict is not None and y.ndim==1 else y
-#
-#     scatter = ax.scatter(X[:, 0], X[:, 1], label=y_labels, cmap="tab10", c=y, s=10, rasterized=True, alpha=0.75)
-#     ax.set_xlabel("component: 0")
-#     ax.set_ylabel("component: 1")
-#     # ax.axis("equal")
-#     if legend:
-#         plt.legend(*scatter.legend_elements(), title="Classes", loc='center left', bbox_to_anchor=(1, 0.5))
-#     ax.set_title(title)
-#     save_figure(f"{title}_2d_analysis.pdf")
-#     plt.show()
-#     return fig, ax
-
-
-def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
-    fig, ax = plt.subplots()
-
+def plot2d_analysis(X, y, title, c0=0, c1=1, labels_dict=None, legend=False):
     # Loop over each unique class to plot them separately
     y = np.squeeze(y)
     if y.ndim == 1:
@@ -440,18 +420,32 @@ def plot2d_analysis(X, y, title, labels_dict=None, legend=False):
     else:
         unique_classes = np.unique(y[:, 0])
 
-    for cls in unique_classes:
+    fig, ax = plt.subplots()
+
+    # Use a perceptually uniform colormap for better distinction
+    colors = plt.cm.tab10(np.linspace(0, 1, len(unique_classes)))
+
+    for cls, color in zip(unique_classes, colors):
         ix = np.where(y == cls)
-        ax.scatter(X[ix, 0], X[ix, 1], s=5, alpha=0.25, label=labels_dict[cls] if labels_dict else cls)
+        ax.scatter(X[ix, c0], X[ix, c1], s=5, alpha=0.25, color=color,
+                   label=labels_dict[cls] if labels_dict else cls)
 
     # Add axis labels and title
-    ax.set_xlabel("Component 0")
-    ax.set_ylabel("Component 1")
+    ax.set_xlabel(f"Component {c0}")
+    ax.set_ylabel(f"Component {c1}")
     ax.set_title(title)
+    # Remove top and right spines for a cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
 
     # Add legend if requested
-    if legend:
-        ax.legend(title="Classes", loc='center left', bbox_to_anchor=(1, 0.5))
+    # Add legend with solid color points
+    legend_elements = [plt.Line2D([0], [0], marker='o', color='w',
+                                  markerfacecolor=color, markersize=10,
+                                  label=labels_dict[cls] if labels_dict else cls)
+                       for cls, color in zip(unique_classes, colors)]
+    ax.legend(handles=legend_elements, title="Classes", loc='center left',
+              bbox_to_anchor=(1, 0.5), frameon=False)
 
     # Save the figure
     save_figure(f"{title}_2d_analysis.pdf")
@@ -539,11 +533,13 @@ class ExperimentInfoHandler:
 
     """
 
-    def __init__(self, name: str, description: str, random_seed: int, experiment_dir: str = "experiments"):
+    def __init__(self, name: str, description: str, random_seed: int, experiment_dir: str = "experiments",
+                 root_path=None):
         self.experiment_name = name
         self.experiment_description = description
         self.random_seed = random_seed
-        self.experiment_folder = Path.cwd() / f"{experiment_dir}/{self.experiment_name}"
+        self.root_path = root_path or Path.cwd()
+        self.experiment_folder = Path(self.root_path) / "output" / f"{experiment_dir}/{self.experiment_name}"
         self.create_experiment_folder()
         self.add_experiment_info_to_folder()
         self.extra_args = dict()
@@ -573,7 +569,7 @@ class ExperimentInfoHandler:
 
     def add_extra_args(self, **kwargs):
         # add extra args to the experiment json
-        self.extra_args.update({k: v for k, v in kwargs.items() if isinstance(v, (int, float, str))})
+        self.extra_args.update({k: v for k, v in kwargs.items() if isinstance(v, (int, float, str, tuple, dict))})
         with open(self.experiment_folder / "experiment_info.json", "r") as f:
             info = json.load(f)
         info.update(self.extra_args)
@@ -638,46 +634,6 @@ def generate_bent_images(N, M, num_samples, param_range=(0.1, 5)):
     return images
 
 
-# Modified bent function to generate images with discrete labels based on function index modulo 5
-def generate_binary_bent_batch_with_discrete_labels(M, N):
-    # Calculate number of bits needed for each axis (log2(N))
-    num_bits = int(np.log2(N))
-
-    # Function to generate a bent image for a given index (to vary the function for each image)
-    def bent_function_general(index, *bits):
-        # Apply XOR and AND operations, adjusting based on available bits
-        result = index % 2
-        for i in range(0, num_bits - 1):  # Fix the range to avoid out-of-bounds access
-            result ^= (bits[i] ^ bits[i + num_bits] ^ (index % 3)) & (bits[i + 1] ^ bits[i + num_bits - 1])
-        return result
-
-    # Create a batch of M NxN grids to hold the bent function outputs
-    batch = np.zeros((M, N, N))
-    labels = []
-
-    # Generate M different images and assign discrete labels
-    for m in range(M):
-        black_pixel_count = 0  # Count the number of black pixels (representing 1s)
-
-        # Fill the grid based on the bent function for each image in the batch
-        for i in range(N):
-            for j in range(N):
-                # Convert i and j into binary representation with num_bits bits
-                x_bits = [(i >> bit) & 1 for bit in range(num_bits)]
-                y_bits = [(j >> bit) & 1 for bit in range(num_bits)]
-
-                # Combine the bits into a single tuple and apply the bent function for the m-th image
-                batch[m, i, j] = bent_function_general(m, *x_bits, *y_bits)
-                if batch[m, i, j] == 1:
-                    black_pixel_count += 1
-
-        # Generate a label based on function index modulo 5 to assign 5 discrete classes
-        class_label = m % 5
-        labels.append(class_label)
-
-    return batch, labels
-
-
 class FakeDataset:
     def __init__(self):
         self.data = None
@@ -691,10 +647,10 @@ def bent(root, train=True, download=True, transform=None, n=32, m=32):
     # Generate 2D real bent function images data
     dataset = FakeDataset()
     if train:
-        dataset.data = generate_bent_images(n, m, num_samples=3000) * 255
+        dataset.data = generate_bent_images(n, m, num_samples=2000) * 255
 
     else:
-        dataset.data = generate_bent_images(n, m, num_samples=1000) * 255
+        dataset.data = generate_bent_images(n, m, num_samples=500) * 255
 
     dataset.targets = np.zeros(len(dataset.data))
     return dataset
@@ -704,22 +660,11 @@ def sinusoidal(root, train=True, download=True, transform=None, n=32, m=32):
     # Generate 2D sinusoidal data
     dataset = FakeDataset()
     if train:
-        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=1000) * 255
+        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=2000) * 255
     else:
-        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=1000) * 255
+        dataset.data = generate_2d_sinusoidal_data(n, m, num_samples=500) * 255
 
     dataset.targets = np.zeros(len(dataset.data))
-    return dataset
-
-
-def binary_bent(root, train=True, download=True, transform=None, n=32, m=32):
-    # Generate 2D binary bent function images data
-    dataset = FakeDataset()
-    if train:
-        dataset.data, dataset.targets = generate_binary_bent_batch_with_discrete_labels(3000, n)
-    else:
-        dataset.data, dataset.targets = generate_binary_bent_batch_with_discrete_labels(1000, n)
-
     return dataset
 
 
@@ -799,10 +744,9 @@ def make_classification_report(model, pca, X, y, X_test, y_test, n_components=No
     # Transform the data using POLCA-Net but using batch_size since data could be large
     min_batch_size = 2048  # adjust this value to fit the memory
     batch_size = min(min_batch_size, X_train.shape[0])
-    X_train_polca = np.concatenate([model.predict(X_train[i:i + batch_size], n_components=n_components)[0] for i in
-                                    range(0, len(X_train), batch_size)])
-    X_test_polca = np.concatenate([model.predict(X_test[i:i + batch_size], n_components=n_components)[0] for i in
-                                   range(0, len(X_test), batch_size)])
+    # predict with predict_batched
+    X_train_polca = model.predict_batched(X_train, batch_size=batch_size, n_components=n_components)[0]
+    X_test_polca = model.predict_batched(X_test, batch_size=batch_size, n_components=n_components)[0]
 
     # Standardize all data splits using sklearn StandardScaler for each data and method
     pca_scaler = StandardScaler()
@@ -828,7 +772,7 @@ def make_classification_report(model, pca, X, y, X_test, y_test, n_components=No
 
     # Display the DataFrames
     print("Classification Performance Metrics DataFrame:")
-    display(df_metrics.round(2))
+    display(df_metrics.round(4))
     kind = "_" + kind if kind else ""
     save_df_to_csv(df_metrics, f"classification_metrics{kind}.csv")
 
@@ -842,9 +786,11 @@ def perform_pca(X, n_components, title="PCA"):
     return pca
 
 
-class FakeContextManager:
-    def __enter__(self, *args, **kwargs):
-        pass
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+# Custom float format function
+def custom_float_format(x):
+    if pd.isnull(x):
+        return ""  # Handle NaN
+    elif abs(x) >= 1e5 or abs(x) < 1e-5:
+        return f"{x:.4e}"  # Scientific notation for large/small numbers
+    else:
+        return f"{x:.5f}"  # Fixed-point notation for other numbers
