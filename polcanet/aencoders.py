@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 from torch import nn as nn
@@ -226,6 +227,139 @@ class LSTMDecoder(nn.Module):
 
         # Reshape to desired output dimensions
         return x.view(-1, *self.output_dim)
+
+class LSTMConvDecoder(nn.Module):
+    """
+    An LSTM-based decoder with convolutional layers capable of handling various output dimensions.
+    """
+
+    def __init__(self, latent_dim, hidden_size, output_dim,
+                 num_layers=2, proj_size=None, bias=True,
+                 act_fn=nn.GELU, final_act_fn=None, initial_scale=8):
+        super(LSTMConvDecoder, self).__init__()
+        self.latent_dim = latent_dim
+        self.hidden_size = hidden_size
+        self.proj_size = proj_size or 0
+        self.act_fn = act_fn()
+        self.final_act_fn = final_act_fn() if final_act_fn else None
+        self.initial_scale = initial_scale  # New parameter for initial scaling factor
+
+        # Determine effective hidden size
+        effective_hidden_size = self.proj_size if self.proj_size else self.hidden_size
+
+        # Adjust output_dim to ensure it's a tuple of (channels, height, width)
+        if isinstance(output_dim, (int, float)):
+            output_dim = (1, int(output_dim), 1)
+        elif len(output_dim) == 1:
+            output_dim = (1,) + tuple(output_dim) + (1,)
+        elif len(output_dim) == 2:
+            output_dim = (1,) + tuple(output_dim)
+        elif len(output_dim) == 3:
+            output_dim = tuple(output_dim)
+        else:
+            raise ValueError("Unsupported output dimension shape")
+
+        self.output_channels, self.output_height, self.output_width = output_dim
+
+        # Determine initial feature map size based on initial_scale
+        self.init_height = math.ceil(self.output_height / self.initial_scale)
+        self.init_width = math.ceil(self.output_width / self.initial_scale)
+        self.feature_map_size = (effective_hidden_size, self.init_height, self.init_width)
+
+        # Calculate sequence length for the LSTM
+        self.seq_len = self.init_height * self.init_width
+
+        # Define the LSTM layer
+        self.lstm = nn.LSTM(
+            input_size=self.latent_dim,
+            hidden_size=self.hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            proj_size=self.proj_size,
+            bias=bias
+        )
+
+        # Define the convolutional decoder layers
+        self.conv_layers = self._build_conv_layers(effective_hidden_size, bias=bias)
+
+    def _build_conv_layers(self, in_channels, bias):
+        layers = []
+        current_height = self.init_height
+        current_width = self.init_width
+
+        # Calculate the total upscaling factor needed
+        scale_factor_height = self.output_height / current_height
+        scale_factor_width = self.output_width / current_width
+
+        # Determine the number of upsampling layers needed
+        num_upsamples_height = int(math.ceil(math.log2(scale_factor_height)))
+        num_upsamples_width = int(math.ceil(math.log2(scale_factor_width)))
+        num_upsamples = max(num_upsamples_height, num_upsamples_width)
+
+        # Build upsampling layers
+        for _ in range(num_upsamples):
+            out_channels = max(in_channels // 2, self.output_channels)
+            layers.append(nn.ConvTranspose2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                output_padding=0,
+                bias=bias,
+            ))
+            layers.append(self.act_fn)
+            in_channels = out_channels
+            current_height = (current_height - 1) * 2 - 2 * 1 + 4
+            current_width = (current_width - 1) * 2 - 2 * 1 + 4
+
+        # Handle potential mismatch in output dimensions
+        if current_height != self.output_height or current_width != self.output_width:
+            layers.append(nn.Upsample(
+                size=(self.output_height, self.output_width),
+                mode='linear',
+                align_corners=False
+            ))
+
+        # Final convolutional layer to adjust to the desired output channels
+        layers.append(nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=self.output_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=bias
+        ))
+
+        # Optionally add the final activation function
+        if self.final_act_fn:
+            layers.append(self.final_act_fn)
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+
+        # Prepare LSTM input: repeat the latent vector for each time step
+        x = x.unsqueeze(1).repeat(1, self.seq_len, 1)
+
+        # Pass through the LSTM layer
+        x, _ = self.lstm(x)
+
+        # Reshape LSTM output to match the initial feature map size
+        x = x.contiguous().view(
+            batch_size,
+            self.feature_map_size[0],
+            self.init_height,
+            self.init_width
+        )
+
+        # Pass through the convolutional layers
+        x = self.conv_layers(x)
+
+        return x.squeeze()
+
+
 
 class ConvEncoder(nn.Module):
     """
@@ -617,6 +751,136 @@ class LinearDecoder(nn.Module):
     def forward(self, z):
         x = self.decoder(z)
         return x.view(-1, *self.input_dim)
+
+class LinearConvDecoder(nn.Module):
+    """
+    A decoder that uses linear layers followed by convolutional layers to reconstruct the output.
+    Features:
+    - Flexible output dimensions (supports 1D, 2D, and 3D outputs).
+    - Parameterizable initial scale factor (initial_scale).
+    - Configurable activation functions (act_fn, final_act_fn).
+    - Adjustable number of linear layers and hidden sizes.
+    - Alternative convolutional architecture using nn.Upsample and nn.Conv2d.
+    - Bias parameter controls bias usage in all layers that have a bias term.
+    """
+
+    def __init__(self, latent_dim, hidden_sizes, output_dim,
+                 bias=True, act_fn=nn.GELU, final_act_fn=None, initial_scale=8):
+        super(LinearConvDecoder, self).__init__()
+        self.latent_dim = latent_dim
+        self.hidden_sizes = hidden_sizes  # List of hidden sizes for linear layers
+        self.act_fn = act_fn()
+        self.final_act_fn = final_act_fn() if final_act_fn else None
+        self.initial_scale = initial_scale
+        self.bias = bias  # Bias parameter for all layers with bias
+
+        # Adjust output_dim to ensure it's a tuple of (channels, height, width)
+        if isinstance(output_dim, (int, float)):
+            output_dim = (1, int(output_dim), 1)
+        elif len(output_dim) == 1:
+            output_dim = (1,) + tuple(output_dim) + (1,)
+        elif len(output_dim) == 2:
+            output_dim = (1,) + tuple(output_dim)
+        elif len(output_dim) == 3:
+            output_dim = tuple(output_dim)
+        else:
+            raise ValueError("Unsupported output dimension shape")
+
+        self.output_channels, self.output_height, self.output_width = output_dim
+
+        # Determine initial feature map size
+        self.init_height = math.ceil(self.output_height / self.initial_scale)
+        self.init_width = math.ceil(self.output_width / self.initial_scale)
+        self.feature_map_size = (self.hidden_sizes[-1], self.init_height, self.init_width)
+
+        # Define the fully connected layers
+        self.fc_layers = self._build_fc_layers()
+
+        # Define the convolutional decoder layers
+        self.conv_layers = self._build_conv_layers(self.hidden_sizes[-1])
+
+    def _build_fc_layers(self):
+        layers = []
+        input_dim = self.latent_dim
+
+        for hidden_size in self.hidden_sizes:
+            layers.append(nn.Linear(input_dim, hidden_size, bias=self.bias))
+            layers.append(self.act_fn)
+            input_dim = hidden_size
+
+        # Final linear layer to map to initial feature map size
+        output_dim = self.feature_map_size[0] * self.init_height * self.init_width
+        layers.append(nn.Linear(input_dim, output_dim, bias=self.bias))
+        layers.append(self.act_fn)
+
+        return nn.Sequential(*layers)
+
+    def _build_conv_layers(self, in_channels):
+        layers = []
+        current_height = self.init_height
+        current_width = self.init_width
+
+        # Calculate the total upscaling factor needed
+        scale_factor_height = self.output_height / current_height
+        scale_factor_width = self.output_width / current_width
+
+        # Number of upsampling steps (using powers of 2)
+        num_upsamples_height = int(math.ceil(math.log2(scale_factor_height)))
+        num_upsamples_width = int(math.ceil(math.log2(scale_factor_width)))
+        num_upsamples = max(num_upsamples_height, num_upsamples_width)
+
+        for _ in range(num_upsamples):
+            out_channels = max(in_channels // 2, self.output_channels)
+            layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            layers.append(nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=self.bias
+            ))
+            layers.append(self.act_fn)
+            in_channels = out_channels
+            current_height *= 2
+            current_width *= 2
+
+        # Adjust to desired output size if necessary
+        if current_height != self.output_height or current_width != self.output_width:
+            layers.append(nn.Upsample(
+                size=(self.output_height, self.output_width),
+                mode='linear',
+                align_corners=False
+            ))
+
+        # Final convolution to adjust the number of channels
+        layers.append(nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=self.output_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=self.bias
+        ))
+
+        if self.final_act_fn:
+            layers.append(self.final_act_fn)
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+
+        # Pass through the fully connected layers
+        x = self.fc_layers(x)  # Shape: (batch_size, feature_map_flattened_size)
+
+        # Reshape to initial feature map size
+        x = x.view(batch_size, self.feature_map_size[0], self.init_height, self.init_width)
+
+        # Pass through convolutional layers
+        x = self.conv_layers(x)  # Output shape: (batch_size, output_channels, output_height, output_width)
+
+        return x.squeeze()
 
 
 class SimpleEmbeddedRegressor(nn.Module):

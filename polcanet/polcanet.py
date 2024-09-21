@@ -241,20 +241,18 @@ class PolcaNetLoss(nn.Module):
         t_class = self.c[0] != 0 and self.c[1] > random()
 
         # Robust reconstruction loss
+        # The mask works by randomly zeroing out x% of the pixels in the input and the reconstruction.
         mask = torch.rand_like(r) > 0.1
         # Apply the mask to both the reconstruction and the original
         masked_r = r * mask
         masked_x = x * mask
         l_rec = F.mse_loss(masked_r, masked_x) if t_rec else 0
-
         l_ort = self.orthogonality_loss(z, w) if t_ort else 0
         l_com = self.center_of_mass_loss(w) if t_com else 0
         l_var = v.mean() if t_var else 0
         l_class = self.clustering_loss(z, target, w) if t_class else 0
 
         # Combine losses
-        # Purpose: Balance all loss components
-        # Method: Weighted sum of individual losses
         loss = (
                 self.r[0] * l_rec +
                 self.c[0] * l_class +
@@ -292,10 +290,10 @@ class PolcaNetLoss(nn.Module):
         Purpose: Encourage latent dimensions to be uncorrelated
         Method: Penalize off-diagonal elements of the cosine similarity matrix
         """
-        # Add a little additive noise to z
-        z = z + eps * torch.randn_like(z)
+        # Multiply by the weights and add a little additive noise to z for numerical stability.
+        z = z * w + eps * torch.randn_like(z)
         # Normalize z along the batch dimension
-        z_norm = F.normalize(z * w, p=2, dim=0)
+        z_norm = F.normalize(z, p=2, dim=0)
 
         # Compute cosine similarity matrix
         s = torch.mm(z_norm.t(), z_norm)  # z_norm.t() @ z_norm = I
@@ -303,7 +301,6 @@ class PolcaNetLoss(nn.Module):
 
         idx0, idx1 = torch.triu_indices(s.shape[0], s.shape[1], offset=1)  # indices of triu w/o diagonal
         cos_sim = s[idx0, idx1]
-
         loss = torch.mean(cos_sim.square())
 
         return loss

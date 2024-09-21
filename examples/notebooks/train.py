@@ -21,7 +21,7 @@ import polcanet.reports as report
 import polcanet.utils
 import polcanet.utils as ut
 from polcanet import PolcaNet
-from polcanet.aencoders import ConvEncoder, LinearDecoder, LSTMDecoder
+from polcanet.aencoders import ConvEncoder, LinearDecoder, LSTMDecoder, LinearConvDecoder
 from polcanet.utils import perform_pca
 
 torch.autograd.set_detect_anomaly(False)
@@ -198,21 +198,31 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params) -> Pol
     #     bias=False,
     # )
 
-    decoder = LSTMDecoder(
+    # decoder = LSTMDecoder(
+    #     latent_dim=latent_dim,
+    #     hidden_size=1024,
+    #     output_dim=input_dim,
+    #     num_layers=1,
+    #     proj_size=None,
+    #     bias=False,
+    # )
+
+    decoder = LinearConvDecoder(
         latent_dim=latent_dim,
-        hidden_size=1024,
+        hidden_sizes=[256] * 3,
         output_dim=input_dim,
-        num_layers=1,
-        proj_size=None,
+        initial_scale=4,
+        act_fn=nn.GELU,
         bias=False,
     )
 
     r = params.r if params.r is not None else 1
     c = params.c if params.c is not None else 0
-    alpha = params.alpha if params.alpha is not None else 1e-1
-    beta = params.beta if params.beta is not None else 1e-1
+    alpha = params.alpha if params.alpha is not None else 1e-2
+    beta = params.beta if params.beta is not None else 1e-2
     gamma = params.gamma if params.gamma is not None else 0
     std_noise = 0.0
+    blend_prob = 0.25
 
     if params.with_labels:
         r = params.r if params.r is not None else 1
@@ -221,6 +231,7 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params) -> Pol
         beta = params.beta if params.beta is not None else 1e-1
         gamma = params.gamma if params.gamma is not None else 0
         std_noise = 0.0
+        blend_prob = 0.25
 
     extra_args = {
             "r": r,
@@ -228,7 +239,8 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params) -> Pol
             "alpha": alpha,
             "beta": beta,
             "gamma": gamma,
-            "std_noise": std_noise
+            "std_noise": std_noise,
+            "blend_prob": blend_prob,
     }
     experiment.add_extra_args(**extra_args)
 
@@ -242,7 +254,9 @@ def create_polca_model(experiment, input_dim, latent_dim, labels, params) -> Pol
         beta=beta,  # variance sorting loss weight
         gamma=gamma,  # variance reduction loss weight
         class_labels=labels,  # class labels for supervised in case labels is not None
-        std_noise=std_noise  # standard deviation of the noise
+        std_noise=std_noise,  # standard deviation of the noise
+        blend_prob=blend_prob,  # blending probability
+
     )
 
     pprint(model)
