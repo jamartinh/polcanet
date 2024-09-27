@@ -1,7 +1,10 @@
+import gc
 from collections import defaultdict
+from collections.abc import Sequence
 from itertools import combinations, batched
+from os.path import split
 from random import random
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union, Optional
 
 import numpy as np
 import pandas as pd
@@ -9,11 +12,13 @@ import torch
 import torch.nn as nn
 from IPython.core.display_functions import clear_output
 from IPython.display import display
+from absl.logging.converter import standard_to_cpp
 from ipywidgets.widgets import Output
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
+from polcanet.aencoders import FastTensorDataLoader
 from polcanet.utils import custom_float_format
 
 
@@ -90,7 +95,7 @@ class LossConflictAnalyzer:
 
                 self.pairwise_interactions[conflict_key] = self.pairwise_interactions.get(conflict_key, 0) + 1
                 self.pairwise_similarities[conflict_key] = self.pairwise_similarities.get(conflict_key, []) + [
-                        similarity]
+                    similarity]
 
                 if similarity < -self.conflict_threshold:
                     self.total_conflicts += 1
@@ -195,11 +200,11 @@ class PolcaNetLoss(nn.Module):
 
         self.loss_names = {"loss": "Total Loss"}
         self.loss_names.update({
-                "rec": "Reconstruction Loss" if self.r[0] != 0 else None,
-                "ort": "Orthogonality Loss" if self.alpha[0] != 0 else None,
-                "com": "Center of Mass Loss" if self.beta[0] != 0 else None,
-                "var": "Variance Reduction Loss" if self.gamma[0] != 0 else None,
-                "class": "Classification Loss" if self.class_labels is not None else None,
+            "rec": "Reconstruction Loss" if self.r[0] != 0 else None,
+            "ort": "Orthogonality Loss" if self.alpha[0] != 0 else None,
+            "com": "Center of Mass Loss" if self.beta[0] != 0 else None,
+            "var": "Variance Reduction Loss" if self.gamma[0] != 0 else None,
+            "class": "Classification Loss" if self.class_labels is not None else None,
 
         })
         self.loss_names = {k: v for k, v in self.loss_names.items() if v is not None}
@@ -232,6 +237,7 @@ class PolcaNetLoss(nn.Module):
 
         v = torch.var(z, dim=0)
         w = F.normalize(v, p=1.0, dim=0)
+        zw = z * w
 
         # random tests for the loss components
         t_rec = self.r[0] != 0 and self.r[1] > random()
@@ -246,11 +252,12 @@ class PolcaNetLoss(nn.Module):
         # Apply the mask to both the reconstruction and the original
         masked_r = r * mask
         masked_x = x * mask
-        l_rec = F.mse_loss(masked_r, masked_x) if t_rec else 0
-        l_ort = self.orthogonality_loss(z, w) if t_ort else 0
+        l_rec = F.huber_loss(masked_r, masked_x) if t_rec else torch.tensor(0.0, device=z.device, requires_grad=True)
+        l_ort = self.orthogonality_loss(zw) if t_ort else 0
         l_com = self.center_of_mass_loss(w) if t_com else 0
         l_var = v.mean() if t_var else 0
-        l_class = self.clustering_loss(z, target, w) if t_class else 0
+        l_class = self.clustering_loss(zw, target) if t_class else 0
+        # l_class = self.cross_entropy_loss(yp, target) if t_class else 0
 
         # Combine losses
         loss = (
@@ -263,16 +270,15 @@ class PolcaNetLoss(nn.Module):
 
         # dict of losses:
         loss_dict = {
-                "rec": (l_rec, self.r),
-                "ort": (l_ort, self.alpha),
-                "com": (l_com, self.beta),
-                "var": (l_var, self.gamma),
-                "class": (l_class, self.c),
+            "rec": (l_rec, self.r),
+            "ort": (l_ort, self.alpha),
+            "com": (l_com, self.beta),
+            "var": (l_var, self.gamma),
+            "class": (l_class, self.c),
         }
         aux_losses = [l for l, (weight, prob) in loss_dict.values() if weight != 0]
 
         return loss, aux_losses
-
 
     def center_of_mass_loss(self, w):
         """
@@ -285,13 +291,13 @@ class PolcaNetLoss(nn.Module):
         return l_com
 
     @staticmethod
-    def orthogonality_loss(z, w, eps=1e-8):
+    def orthogonality_loss(z, eps=1e-8):
         """ Orthogonality loss
         Purpose: Encourage latent dimensions to be uncorrelated
         Method: Penalize off-diagonal elements of the cosine similarity matrix
         """
         # Multiply by the weights and add a little additive noise to z for numerical stability.
-        z = z * w + eps * torch.randn_like(z)
+        z = z + eps * torch.randn_like(z)
         # Normalize z along the batch dimension
         z_norm = F.normalize(z, p=2, dim=0)
 
@@ -320,48 +326,63 @@ class PolcaNetLoss(nn.Module):
         return l_cross_ent
 
 
-    @staticmethod
-    def clustering_loss(z, labels, w):
-        # Normalize embeddings
-        z_norm = F.normalize(z * w, p=2, dim=1)
+    def clustering_loss(self, z, labels, eps=1e-8):
+        # Use precomputed weight vector w
+        z_norm = F.normalize(z, p=2, dim=1)
 
-        # Determine the type of labels
+        # Use precomputed num_classes
+        num_classes = len(self.class_labels)
+
+        # Labels are already indices from 0 to N
         if labels.dim() == 1 or (labels.dim() == 2 and labels.shape[1] == 1):
             # Single-label case
-            if labels.dim() == 2:
-                labels = labels.squeeze(1)
-            unique_labels = torch.unique(labels)
-            num_classes = len(unique_labels)
+            labels = labels.view(-1)
             label_mask = F.one_hot(labels, num_classes=num_classes).float()
         else:
-            # Multi-label case (e.g., ChestMNIST)
-            label_mask = labels.float()  # Assuming labels are already in one-hot or multi-hot format
+            # Multi-label case
+            label_mask = labels.float()  # Labels are multi-hot vectors
 
-        # Compute all centroids at once
+        # Compute class sizes
+        class_sizes = label_mask.sum(dim=0)
+
+        # Identify non-empty classes and get their indices
+        non_empty_classes = class_sizes > 0
+        non_empty_class_indices = non_empty_classes.nonzero(as_tuple=False).squeeze(1)
+
+        # Check for invalid indices
+        if non_empty_class_indices.numel() == 0:
+            return 0
+
+        # Filter label_mask and class_sizes to include only non-empty classes
+        label_mask = label_mask[:, non_empty_class_indices]
+        class_sizes = class_sizes[non_empty_class_indices]
+
+        # Compute centroids
         centroids = torch.matmul(label_mask.t(), z_norm)
-        class_sizes = label_mask.sum(0)
-        centroids = centroids / class_sizes.unsqueeze(1).clamp(min=1)
+        centroids = centroids / class_sizes.unsqueeze(1)
         centroids = F.normalize(centroids, p=2, dim=1)
 
-        # Compute all intra-class and inter-class similarities at once
+        # Compute similarities
         all_similarities = torch.matmul(z_norm, centroids.t())
+        all_similarities = all_similarities.clamp(-1 + eps, 1 - eps)
 
-        # Compute losses
-        intra_class_similarities = (all_similarities * label_mask).sum(1)
+        # Compute intra-class similarities (normalized per sample)
+        num_labels_per_sample = label_mask.sum(dim=1, keepdim=True) + eps
+        intra_class_similarities = ((all_similarities * label_mask).sum(dim=1, keepdim=True)) / num_labels_per_sample
         intra_class_loss = (1 - intra_class_similarities.square()).sum()
 
-        inter_class_similarities = all_similarities - (all_similarities * label_mask)
+        # Compute inter-class similarities
+        inter_class_similarities = all_similarities * (1 - label_mask)
         inter_class_loss = inter_class_similarities.square().sum()
 
-        # Combine losses
+        # Total loss
         total_loss = intra_class_loss + inter_class_loss
-        total_samples = label_mask.sum()
 
-        if total_samples == 0:
-            return torch.tensor(0.0, device=z.device)
+        # Normalize the loss by the number of classes and batch size
+        batch_size = z_norm.size(0)
+        normalized_loss = total_loss / (num_classes * batch_size)
 
-        # Normalize the loss
-        return total_loss / (2 * total_samples)
+        return normalized_loss
 
 
 class PolcaNet(nn.Module):
@@ -437,11 +458,11 @@ class PolcaNet(nn.Module):
                  c: float = 1.,
                  alpha: float | Tuple[float, float] = 1e-2,
                  beta: float | Tuple[float, float] = 1e-2,
-                 gamma: float | Tuple[float, float] = 1e-4,
+                 gamma: float | Tuple[float, float] = 1e-8,
                  class_labels=None,
                  analyzer_rate: float = 0.05,
                  std_noise: float = 0.0,
-                 blend_prob: float = 0.25,
+                 blend_prob: float = 0.5,
                  ):
         """
         Initialize PolcaNet with the provided parameters.
@@ -482,7 +503,7 @@ class PolcaNet(nn.Module):
 
     def forward(self, x):
         z = self.encoder(x)
-        r = self.decoder(z)  # if self.class_labels is None else self.decoder(z[0])
+        r = self.decoder(z)  if self.class_labels is None else self.decoder(z[0])
         return z, r
 
     def predict(self, in_x, mask=None, n_components=None):
@@ -506,8 +527,8 @@ class PolcaNet(nn.Module):
             else:
                 x = torch.tensor(in_x, dtype=torch.float32, device=self.device, requires_grad=False)
             z = self.encoder(x)
-            # if self.class_labels is not None:
-            #     return z[0].cpu().numpy()
+            if self.class_labels is not None:
+                return z[0].cpu().numpy()
 
         return z.cpu().numpy()
 
@@ -553,9 +574,6 @@ class PolcaNet(nn.Module):
         optimizer = optimizer or torch.optim.AdamW(self.parameters(), lr=lr,
                                                    weight_decay=weight_decay, betas=(0.9, 0.99), eps=1e-6)
 
-        if self.class_labels is not None and y is None:
-            raise ValueError("Class labels are provided, but no target values are provided in train_model")
-
         fitter = self.fitter(optimizer=optimizer,
                              data=data,
                              y=y,
@@ -575,14 +593,18 @@ class PolcaNet(nn.Module):
         df_train_val = None
         try:
             for epoch, metrics, v_metrics in epoch_progress:
-                metrics.update(**{"epoch": epoch + 1, "split": "train"})
-                train_metrics.append(metrics)
+                train_metrics.append({**metrics, **{"epoch": epoch + 1, "split": "train"}})
                 if v_metrics is not None:
-                    v_metrics.update(**{"epoch": epoch + 1, "split": "val"})
-                    val_metrics.append(v_metrics)
+                    val_metrics.append({**v_metrics, **{"epoch": epoch + 1, "split": "val"}})
 
                 if epoch % report_freq == 0 and bool(verbose):
-                    metrics_list = [metrics, v_metrics] if v_metrics is not None else [metrics]
+                    # epoch_progress.set_postfix(metrics)
+
+                    metrics.update(**{"epoch": epoch + 1, "split": "train"})
+                    if v_metrics is not None:
+                        v_metrics.update(**{"epoch": epoch + 1, "split": "val"})
+
+                    metrics_list = [metrics, v_metrics]
                     new_df_train_val = pd.DataFrame.from_records(metrics_list).set_index("split")
                     new_df_train_val.drop(columns=["epoch"], inplace=True, errors="ignore")
                     if df_train_val is None:
@@ -595,25 +617,123 @@ class PolcaNet(nn.Module):
                         clear_output(wait=True)
                         print(df_train_val.map(custom_float_format).to_string())
 
-            # pretty print final metrics stats
-            if bool(verbose):
-                print()
-                print(f"Final Train metrics at epoch: {epoch + 1}")
-                print(f"========================================")
-                for k, v in metrics.items():
-                    if k in ["epoch", "split"]: continue
-                    print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
-                print()
-                if v_metrics is not None:
-                    print(f"Final Validation metrics at epoch: {epoch + 1}")
-                    print(f"========================================")
-                    for k, v in v_metrics.items():
-                        if k in ["epoch", "split"]: continue
-                        print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
-
         except KeyboardInterrupt:
             print("Training interrupted by user.")
-            return None
+
+        finally:
+
+            # Print final metrics if available
+            if bool(verbose) and metrics:
+                print("\nFinal Train metrics at epoch:", epoch + 1)
+                print("=" * 40)
+                for k, v in metrics.items():
+                    if k not in ["epoch", "split"]:
+                        print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
+
+                if v_metrics:
+                    print("\nFinal Validation metrics at epoch:", epoch + 1)
+                    print("=" * 40)
+                    for k, v in v_metrics.items():
+                        if k not in ["epoch", "split"]:
+                            print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
+
+        return None
+
+    def old_prepare_training_data(self,
+                                  data: Union[torch.Tensor, np.ndarray, DataLoader],
+                                  y: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                                  val_data: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                                  val_y: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                                  batch_size: int = 256
+                                  ) -> Tuple[DataLoader, Optional[DataLoader]]:
+
+        # Prepare training data
+        data_loader = data
+        if not isinstance(data, DataLoader):
+            data = torch.as_tensor(data, dtype=torch.float32, device=self.device)
+
+            if y is not None:
+                y = torch.as_tensor(y, dtype=torch.int64, device=self.device)
+                dataset = TensorDataset(data, y)
+            else:
+                dataset = TensorDataset(data)
+
+            data_loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=True,
+            )
+
+        # Prepare validation data
+        val_loader = val_data
+        if val_data is not None and not isinstance(val_data, DataLoader):
+            val_data = torch.as_tensor(val_data, dtype=torch.float32, device=self.device)
+
+            if val_y is not None:
+                val_y = torch.as_tensor(val_y, dtype=torch.int64, device=self.device)
+                val_dataset = TensorDataset(val_data, val_y)
+            else:
+                val_dataset = TensorDataset(val_data)
+
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=True,
+            )
+
+        return data_loader, val_loader
+
+    def prepare_training_data(self,
+                              data: Union[torch.Tensor, np.ndarray, DataLoader],
+                              y: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                              val_data: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                              val_y: Optional[Union[torch.Tensor, np.ndarray]] = None,
+                              batch_size: int = 256,
+                              use_fast: bool = True
+                              ) -> Tuple[DataLoader, Optional[DataLoader]]:
+        def create_loader(data, labels=None, shuffle=True):
+            data = torch.as_tensor(data, dtype=torch.float32, device=self.device)
+            if labels is not None:
+                labels = torch.as_tensor(labels, dtype=torch.int64, device=self.device)
+
+            if use_fast:
+                return FastTensorDataLoader(data,
+                                            labels,
+                                            batch_size=batch_size,
+                                            shuffle=shuffle) if labels is not None else FastTensorDataLoader(data,
+                                                                                                             batch_size=batch_size,
+                                                                                                             shuffle=shuffle)
+            else:
+                dataset = TensorDataset(data, labels) if labels is not None else TensorDataset(data)
+                return DataLoader(dataset,
+                                  batch_size=batch_size,
+                                  shuffle=shuffle,
+                                  num_workers=0,
+                                  pin_memory=False,
+                                  drop_last=True,
+                                  )
+
+        # Prepare training data
+        if isinstance(data, DataLoader):
+            data_loader = data
+        else:
+            data_loader = create_loader(data, y, shuffle=True)
+
+        # Prepare validation data
+        val_loader = None
+        if val_data is not None:
+            if isinstance(val_data, DataLoader):
+                val_loader = val_data
+            else:
+                val_loader = create_loader(val_data, val_y, shuffle=False)
+
+        return data_loader, val_loader
 
     def fitter(self, optimizer, data, y=None, batch_size=512, num_epochs=100, val_data=None, val_y=None):
         self.train()
@@ -667,22 +787,72 @@ class PolcaNet(nn.Module):
 
             val_metrics = None
             if val_data is not None:
-                val_loss, val_aux_losses = self.val_step(x=val_data, y=val_y)
-                val_losses["loss"].append(val_loss.item())
-                for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
-                    l_value = 0 if not val_aux_losses[idx] else val_aux_losses[idx].item()
-                    val_losses[name].append(l_value)
+                if is_data_loader:
+                    val_batches = val_data
+                    for val_batch in val_batches:
+                        x = val_batch[0].to(self.device)
+                        targets = val_batch[1].to(self.device) if self.class_labels is not None else None
+                        val_loss, val_aux_losses = self.val_step(x=x, y=targets)
+                        val_losses["loss"].append(val_loss.item())
+                        for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
+                            l_value = 0 if not val_aux_losses[idx] else val_aux_losses[idx].item()
+                            val_losses[name].append(l_value)
+                else:
+                    val_loss, val_aux_losses = self.val_step(x=val_data, y=val_y)
+                    val_losses["loss"].append(val_loss.item())
+                    for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
+                        l_value = 0 if not val_aux_losses[idx] else val_aux_losses[idx].item()
+                        val_losses[name].append(l_value)
+
                 val_metrics = {name: np.mean(val_losses[name]) for name in val_losses}
 
             yield epoch, metrics, val_metrics
+
+    def oldfitter(self, optimizer, data, y=None, batch_size=512, num_epochs=100, val_data=None, val_y=None):
+        data_loader, val_loader = self.prepare_training_data(data, y, val_data, val_y, batch_size)
+        if isinstance(data_loader, FastTensorDataLoader):
+            print("Using FastTensorDataLoader")
+        for epoch in range(num_epochs):
+            self.train()
+            metrics = self.run_epoch(data_loader, optimizer)
+            if epoch % 10 == 0:
+                val_metrics = self.run_epoch(val_loader, None) if val_loader is not None else None
+            else:
+                val_metrics = {k:0 for k in metrics}
+
+            yield epoch, metrics, val_metrics
+
+    def run_epoch(self, data_loader, optimizer):
+
+        losses = defaultdict(list)
+        for batch in data_loader:
+            x, targets = batch if isinstance(batch, Sequence) and len(batch) == 2 else (batch, None)
+            x = x[0] if isinstance(x, Sequence) else x
+            x = x.to(self.device)
+            if targets is not None:
+                targets = targets.to(self.device) if self.class_labels is not None else None
+
+            # with torch.amp.autocast('cuda'):
+            if optimizer is not None:
+                loss, aux_losses = self.learn_step(x=x, optimizer=optimizer, y=targets)
+            else:
+                loss, aux_losses = self.val_step(x=x, y=targets)
+
+            losses["loss"].append(loss.item())
+            for idx, name in enumerate(list(self.polca_loss.loss_names)[1:]):
+                l_value = 0 if not aux_losses[idx] else aux_losses[idx].item()
+                losses[name].append(l_value)
+
+        metrics = {name: np.mean(losses[name]) for name in losses}
+        return metrics
 
     def learn_step(self, x, optimizer, y=None):
         self.train()
         # add small noise to x to make regularization and a little data augmentation x has values in 0,1
         x = self.add_noise(x) if self.std_noise > 0 else x
         z, r = self.forward(x)
-        yp = None  # z[1] if self.class_labels is not None else None
-        # z = z[0] if self.class_labels is not None else z
+        yp = z[1] if self.class_labels is not None else None
+        z = z[0] if self.class_labels is not None else z
 
         with torch.no_grad():
             self.mu = torch.mean(z, dim=0) if self.mu is None else self.mu + 0.01 * (torch.mean(z, dim=0) - self.mu)
@@ -691,7 +861,7 @@ class PolcaNet(nn.Module):
         if random() < self.blend_prob:
             z = self.stochastic_latent_blend(z, self.mu, self.std, batch_prob=self.blend_prob, temperature=1.0)
 
-        classifier_module = None  # self.encoder.classifier if self.class_labels is not None else None
+        classifier_module = self.encoder.classifier if self.class_labels is not None else None
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y, classifier_model=classifier_module)
 
         # Analyze loss conflicts
@@ -709,9 +879,9 @@ class PolcaNet(nn.Module):
         self.eval()
         with torch.no_grad():
             z, r = self.forward(x)
-            yp = None  # z[1] if self.class_labels is not None else None
-            # z = z[0] if self.class_labels is not None else z
-            classifier_module = None  # self.encoder.classifier if self.class_labels is not None else None
+            yp = z[1] if self.class_labels is not None else None
+            z = z[0] if self.class_labels is not None else z
+            classifier_module = self.encoder.classifier if self.class_labels is not None else None
             loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y, classifier_model=classifier_module)
 
             return loss, aux_losses
@@ -776,31 +946,30 @@ class EncoderWrapper(nn.Module):
         self.latent_dim = latent_dim
         self.encoder = encoder
         layers = []
-        for i in range(1):
-            layer = nn.Linear(latent_dim, latent_dim)
-            # Apply orthogonal initialization
+
+        layer = nn.Linear(latent_dim, latent_dim)
+        with torch.no_grad():
             nn.init.orthogonal_(layer.weight)
-            # Apply the scaling to the weight matrix
-            with torch.no_grad():
-                # Get the number of features (output dimension)
-                n_features, n_inputs = layer.weight.shape
-                # Scale the orthogonal matrix
-                scales = torch.linspace(1.0, 0.1, n_features)
-                scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
-                layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
-            layers.append(layer)
+            # Get the number of features (output dimension)
+            n_features, n_inputs = layer.weight.shape
+            # Scale the orthogonal matrix
+            scales = torch.linspace(1.0, 0.1, n_features)
+            scaling_factor = 0.5  # To keep initial activations within a reasonable range for Softsign
+            layer.weight.mul_(scales.unsqueeze(1) * scaling_factor)
+
+        layers.append(layer)
         layers.append(nn.Softsign())
 
         self.polca_bottleneck = nn.Sequential(*layers)
 
-        # if class_labels is not None:
-        #     # Binary, multi-class and multi-label-binary classification
-        #     self.classifier = nn.Linear(latent_dim, len(class_labels), bias=False)
+        if class_labels is not None:
+            # Binary, multi-class and multi-label-binary classification
+            self.classifier = nn.Linear(latent_dim, len(class_labels), bias=False)
 
     def forward(self, x):
         z = self.encoder(x)
         z = self.polca_bottleneck(z)
-        # if self.class_labels is not None:
-        #     return z, self.classifier(z)
+        if self.class_labels is not None:
+            return z, self.classifier(z)
 
         return z

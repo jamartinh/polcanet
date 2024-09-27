@@ -2,6 +2,7 @@ import math
 import numpy as np
 import torch
 from torch import nn as nn
+from torch.utils.data import DataLoader
 
 
 class DenseEncoder(nn.Module):
@@ -212,7 +213,7 @@ class LSTMDecoder(nn.Module):
                             num_layers=num_layers, batch_first=True,
                             proj_size=self.proj_size, bias=bias)
 
-        self.fc = nn.Linear(effective_hidden_size * self.seq_len, self.prod_output_dim,bias=bias)
+        self.fc = nn.Linear(effective_hidden_size * self.seq_len, self.prod_output_dim, bias=bias)
 
     def forward(self, x):
         # Reshape input to (batch_size, seq_len, latent_dim)
@@ -227,6 +228,7 @@ class LSTMDecoder(nn.Module):
 
         # Reshape to desired output dimensions
         return x.view(-1, *self.output_dim)
+
 
 class LSTMConvDecoder(nn.Module):
     """
@@ -360,7 +362,6 @@ class LSTMConvDecoder(nn.Module):
         return x.squeeze()
 
 
-
 class ConvEncoder(nn.Module):
     """
     Convolutional Encoder for dimensionality reduction and feature extraction.
@@ -424,14 +425,27 @@ class ConvEncoder(nn.Module):
         flattened_output_size = nn.Sequential(*layers[:-1])(dummy_input).view(1, -1).size(1)
 
         # Linear layers
-        layer = nn.Linear(flattened_output_size, latent_dim * 4)
+        layer = nn.Linear(flattened_output_size, latent_dim)
         layers.append(layer)
         layers.append(act_fn())
-        layer = nn.Linear(latent_dim * 4, latent_dim * 2)
-        layers.append(layer)
-        layers.append(act_fn())
-        layer = nn.Linear(latent_dim * 2, latent_dim)
-        layers.append(layer)
+        # layer = nn.Linear(flattened_output_size, latent_dim * 8)
+        # layers.append(layer)
+        # layers.append(act_fn())
+        # layer = nn.Linear(latent_dim * 8, latent_dim * 8)
+        # layers.append(layer)
+        # layers.append(act_fn())
+        # layer = nn.Linear(latent_dim * 8, latent_dim * 4)
+        # layers.append(layer)
+        # layers.append(act_fn())
+        # layer = nn.Linear(latent_dim * 4, latent_dim * 4)
+        # layers.append(layer)
+        # layers.append(act_fn())
+        # layer = nn.Linear(latent_dim * 4, latent_dim * 2)
+        # layers.append(layer)
+        # layers.append(act_fn())
+        # layer = nn.Linear(latent_dim * 2, latent_dim)
+        # layers.append(act_fn())
+        # layers.append(layer)
 
         # Define the encoder as a sequential model
         self.encoder = nn.Sequential(*layers)
@@ -522,7 +536,7 @@ class ConvDecoder(nn.Module):
         # Save the final output size and channels
         self.flattened_output_size = current_channels * input_size * input_size if conv_dim == 2 else current_channels * input_size
         self.unflatten_shape = (current_channels, input_size, input_size) if conv_dim == 2 else (
-        current_channels, input_size)
+            current_channels, input_size)
 
         # Linear layers
         layers = []
@@ -591,12 +605,12 @@ class VGG(nn.Module):
         super(VGG, self).__init__()
         self.input_channels = input_channels
         self.cfg = {
-                'VGG8': [32, 'M', 64, 'M', 128, 'M'],
-                'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
-                'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512,
-                          512, 512, 'M'], }
+            'VGG8': [32, 'M', 64, 'M', 128, 'M'],
+            'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+            'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+            'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+            'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512,
+                      512, 512, 'M'], }
         layers = self._make_layers(self.cfg[vgg_name], act_fn)
         layers.append(nn.Flatten())
         self.features = nn.Sequential(*layers)
@@ -642,12 +656,12 @@ class VGGDecoder(nn.Module):
         super(VGGDecoder, self).__init__()
         self.output_channels = output_channels
         self.cfg = {
-                'VGG8': [32, 'M', 64, 'M', 128, 'M'],
-                'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-                'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
-                'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512,
-                          512, 'M'],
+            'VGG8': [32, 'M', 64, 'M', 128, 'M'],
+            'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+            'VGG13': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+            'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
+            'VGG19': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512,
+                      512, 'M'],
         }
 
         # Reverse the configuration for decoding
@@ -688,9 +702,9 @@ class VGGDecoder(nn.Module):
                 layers += [nn.Upsample(scale_factor=2, mode='nearest')]
             else:
                 layers += [
-                        nn.ConvTranspose2d(in_channels, x, kernel_size=3, padding=1),
-                        nn.BatchNorm2d(x),
-                        act_fn()
+                    nn.ConvTranspose2d(in_channels, x, kernel_size=3, padding=1),
+                    nn.BatchNorm2d(x),
+                    act_fn()
                 ]
                 in_channels = x
         return nn.Sequential(*layers)
@@ -751,6 +765,89 @@ class LinearDecoder(nn.Module):
     def forward(self, z):
         x = self.decoder(z)
         return x.view(-1, *self.input_dim)
+
+
+
+
+
+class EfficientLinearConvDecoder(nn.Module):
+    def __init__(self, latent_dim, hidden_sizes, output_dim, bias=True, act_fn=nn.GELU, final_act_fn=None,
+                 min_features=4):
+        super(EfficientLinearConvDecoder, self).__init__()
+        self.latent_dim = latent_dim
+        self.hidden_sizes = hidden_sizes
+        self.act_fn = act_fn()
+        self.final_act_fn = final_act_fn() if final_act_fn else None
+        self.bias = bias
+        self.min_features = min_features
+
+        if isinstance(output_dim, (int, float)):
+            output_dim = (1, int(output_dim), int(output_dim))
+        elif len(output_dim) == 2:
+            output_dim = (1,) + tuple(output_dim)
+
+        self.output_channels, self.output_height, self.output_width = output_dim
+
+        # Determine the initial feature map size
+        self.init_size = 2 ** math.floor(math.log2(min(self.output_height, self.output_width)))
+        self.init_size = max(self.init_size, self.min_features)
+
+        # Determine the number of upsampling steps
+        self.num_upsample = int(math.log2(max(self.output_height, self.output_width) / self.init_size))
+
+        # Calculate initial number of channels
+        self.initial_channels = min(64, hidden_sizes[-1])
+
+        self.fc_layers = self._build_fc_layers()
+        self.conv_layers = self._build_conv_layers()
+
+    def _build_fc_layers(self):
+        layers = []
+        input_dim = self.latent_dim
+
+        for hidden_size in self.hidden_sizes:
+            layers.append(nn.Linear(input_dim, hidden_size, bias=self.bias))
+            layers.append(self.act_fn)
+            input_dim = hidden_size
+
+        # Final linear layer to map to initial feature map size
+        output_dim = self.initial_channels * self.init_size * self.init_size
+        layers.append(nn.Linear(input_dim, output_dim, bias=self.bias))
+        layers.append(self.act_fn)
+
+        return nn.Sequential(*layers)
+
+    def _build_conv_layers(self):
+        layers = []
+        in_channels = self.initial_channels
+
+        for i in range(self.num_upsample):
+            out_channels = min(in_channels * 2, 256)  # Cap at 256 channels
+            layers.extend([
+                nn.Upsample(scale_factor=2, mode='nearest'),
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=self.bias),
+                self.act_fn
+            ])
+            in_channels = out_channels
+
+        # Adjust to final output size if necessary
+        if 2 ** self.num_upsample * self.init_size != self.output_height or 2 ** self.num_upsample * self.init_size != self.output_width:
+            layers.append(
+                nn.Upsample(size=(self.output_height, self.output_width), mode='nearest', align_corners=False))
+
+        layers.append(nn.Conv2d(in_channels, self.output_channels, kernel_size=3, padding=1, bias=self.bias))
+
+        if self.final_act_fn:
+            layers.append(self.final_act_fn)
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        x = self.fc_layers(x)
+        x = x.view(batch_size, self.initial_channels, self.init_size, self.init_size)
+        x = self.conv_layers(x)
+        return x.squeeze()
 
 class LinearConvDecoder(nn.Module):
     """
@@ -849,8 +946,7 @@ class LinearConvDecoder(nn.Module):
         if current_height != self.output_height or current_width != self.output_width:
             layers.append(nn.Upsample(
                 size=(self.output_height, self.output_width),
-                mode='linear',
-                align_corners=False
+                mode='bilinear',
             ))
 
         # Final convolution to adjust the number of channels
@@ -862,6 +958,7 @@ class LinearConvDecoder(nn.Module):
             padding=1,
             bias=self.bias
         ))
+
 
         if self.final_act_fn:
             layers.append(self.final_act_fn)
@@ -904,7 +1001,7 @@ class SimpleEmbeddedRegressor(nn.Module):
     def evaluate_loss(self, x, y):
         yp = self(x)
         squared_error = (yp - y) ** 2
-        normalized_error = (1 + torch.tanh(squared_error))/2.0
+        normalized_error = (1 + torch.tanh(squared_error)) / 2.0
         return 1 - normalized_error.mean()  # Take mean over the batch
 
     def train_step(self, loss):
@@ -912,3 +1009,60 @@ class SimpleEmbeddedRegressor(nn.Module):
         loss.backward(retain_graph=True)
         self.optimizer.step()
 
+
+class FastTensorDataLoader(DataLoader):
+    """
+    A DataLoader-like object for a set of tensors that ensures all examples are seen
+    and all batches are of the same size, potentially repeating some elements.
+    Inherits from PyTorch DataLoader for compatibility.
+    """
+
+    def __init__(self, *tensors, batch_size=32, shuffle=False):
+        """
+        Initialize a FastTensorDataLoader.
+
+        Args:
+            *tensors: Tensors to store. Must have the same length @ dim 0.
+            batch_size (int): Batch size to load.
+            shuffle (bool): If True, use random sampling for batches.
+        """
+        assert all(t.shape[0] == tensors[0].shape[0] for t in tensors), "All tensors must have the same length"
+        self.tensors = tensors
+        self.dataset_len = self.tensors[0].shape[0]
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+        # Calculate # batches
+        self.n_batches = (self.dataset_len + self.batch_size - 1) // self.batch_size
+
+        # Initialize parent DataLoader with an empty list
+        super().__init__(dataset=[], batch_size=batch_size, shuffle=False)
+
+    def __iter__(self):
+        if self.shuffle:
+            indices = torch.randperm(self.dataset_len)
+        else:
+            indices = torch.arange(self.dataset_len)
+
+        # Pad indices if necessary
+        if self.dataset_len % self.batch_size != 0:
+            padding_size = self.batch_size - (self.dataset_len % self.batch_size)
+            padding_indices = torch.randint(0, self.dataset_len, (padding_size,))
+            indices = torch.cat([indices, padding_indices])
+
+        self.indices = indices
+        self.i = 0
+        return self
+
+    def __next__(self):
+        if self.i >= len(self.indices):
+            raise StopIteration
+
+        indices = self.indices[self.i:self.i + self.batch_size]
+        batch = tuple(t[indices] for t in self.tensors)
+
+        self.i += self.batch_size
+        return batch
+
+    def __len__(self):
+        return self.n_batches

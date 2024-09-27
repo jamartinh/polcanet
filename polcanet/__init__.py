@@ -1,4 +1,4 @@
-from polcanet.polcanet import PolcaNet, PolcaNetLoss
+from polcanet.polcanet import PolcaNet, PolcaNetLoss, LossConflictAnalyzer
 
 
 

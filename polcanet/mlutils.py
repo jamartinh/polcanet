@@ -221,3 +221,90 @@ class ReducedPCA:
         :return: Array-like of shape (n_samples, n_features)
         """
         return np.dot(X_transformed, self.components_) + self.mean_
+
+
+
+class SklearnNormalizerAdapter(nn.Module):
+    def __init__(self, sklearn_normalizer):
+        super().__init__()
+        self.normalizer = sklearn_normalizer
+
+    def fit(self, data):
+        self.normalizer.fit(data.cpu().numpy())
+
+    def forward(self, x):
+        return torch.tensor(self.normalizer.transform(x.cpu().numpy())).to(x.device)
+
+    def inverse_transform(self, x):
+        return torch.tensor(self.normalizer.inverse_transform(x.cpu().numpy())).to(x.device)
+
+class NormalizableWrapper(nn.Module):
+    """
+        # Example usage
+        class CoreModel(nn.Module):
+            def __init__(self, input_size, hidden_size, output_size):
+                super().__init__()
+                self.fc1 = nn.Linear(input_size, hidden_size)
+                self.fc2 = nn.Linear(hidden_size, output_size)
+
+            def forward(self, x):
+                x = torch.relu(self.fc1(x))
+                return self.fc2(x)
+
+        # Create the core model
+        input_size, hidden_size, output_size = 10, 20, 5
+        core_model = CoreModel(input_size, hidden_size, output_size)
+
+        # Create custom normalizers (using sklearn as an example)
+        input_normalizer = SklearnNormalizerAdapter(StandardScaler())
+        output_normalizer = SklearnNormalizerAdapter(StandardScaler())
+
+        # Wrap the core model with custom normalization
+        normalizable_model = NormalizableWrapper(
+            core_model,
+            input_normalizer=input_normalizer,
+            output_normalizer=output_normalizer
+        )
+
+        # Generate some dummy data
+        input_data = torch.randn(100, input_size)
+        output_data = torch.randn(100, output_size)
+
+        # Fit normalizers
+        normalizable_model.fit_normalizers(input_data, output_data)
+
+        # Use the model with normalization
+        test_data = torch.randn(10, input_size)
+        predictions = normalizable_model(test_data)
+
+        print(f"Predictions shape: {predictions.shape}")
+        print(f"Is normalizable: {hasattr(normalizable_model, 'fit_normalizers')}")
+        print(f"Is nn.Module: {isinstance(normalizable_model, nn.Module)}")
+    """
+    def __init__(self, model, input_normalizer=None, output_normalizer=None):
+        super().__init__()
+        self.model = model
+        self.input_normalizer = input_normalizer
+        self.output_normalizer = output_normalizer
+
+    def forward(self, x):
+        if self.input_normalizer:
+            x = self.input_normalizer(x)
+        x = self.model(x)
+        if self.output_normalizer:
+            x = self.output_normalizer.inverse_transform(x)
+        return x
+
+    def fit_normalizers(self, input_data, output_data=None):
+        if self.input_normalizer and hasattr(self.input_normalizer, 'fit'):
+            self.input_normalizer.fit(input_data)
+        if self.output_normalizer and output_data is not None and hasattr(self.output_normalizer, 'fit'):
+            self.output_normalizer.fit(output_data)
+
+    def __getattr__(self, name):
+        return getattr(self.model, name)
+
+    @property
+    def core_model(self):
+        return self.model
+
