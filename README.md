@@ -32,7 +32,7 @@ POLCA Net has been tested on 16 diverse datasets, including MNIST, FashionMNIST,
 ### Cosine similarity between the first 11 components of PolcaNet and PCA:
 ![POLCA Net Architecture](assets/mnist_cosine_similarity_of_components.png)
 
-### Variance concentrating in the first 11 components of PolcaNet and PCA:
+### Variance concentrating in the first 11 components of PolcaNet:
 ![POLCA Net Architecture](assets/mnist_variance.png)
 
 ###  Comparins of classification results for the features extracted by PolcaNet and PCA:
