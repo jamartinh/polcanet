@@ -571,8 +571,12 @@ class PolcaNet(nn.Module):
         train_metrics = list()
         val_metrics = list()
         # Create the optimizer if not provided
-        optimizer = optimizer or torch.optim.AdamW(self.parameters(), lr=lr,
-                                                   weight_decay=weight_decay, betas=(0.9, 0.99), eps=1e-6)
+        free_optimizer = False
+        if optimizer is None:
+            optimizer = torch.optim.AdamW(self.parameters(), lr=lr,
+                                          weight_decay=weight_decay, betas=(0.9, 0.99), eps=1e-6)
+            free_optimizer = True
+
 
         fitter = self.fitter(optimizer=optimizer,
                              data=data,
@@ -636,6 +640,16 @@ class PolcaNet(nn.Module):
                     for k, v in v_metrics.items():
                         if k not in ["epoch", "split"]:
                             print(f"{self.polca_loss.loss_names[k]}: {v:.4g}")
+
+        if free_optimizer:
+            del optimizer
+
+        del metrics
+        del v_metrics
+        del fitter
+        del df_train_val
+        gc.collect()
+        torch.cuda.empty_cache()
 
         return None
 
@@ -807,6 +821,12 @@ class PolcaNet(nn.Module):
                 val_metrics = {name: np.mean(val_losses[name]) for name in val_losses}
 
             yield epoch, metrics, val_metrics
+
+        del losses, val_losses
+        data = data.cpu()
+        if val_data is not None:
+            val_data = val_data.cpu()
+
 
     def oldfitter(self, optimizer, data, y=None, batch_size=512, num_epochs=100, val_data=None, val_y=None):
         data_loader, val_loader = self.prepare_training_data(data, y, val_data, val_y, batch_size)
