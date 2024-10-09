@@ -27,13 +27,13 @@ Experimental Results:
 POLCA Net has been tested on 16 diverse datasets, including MNIST, FashionMNIST, and MedMNIST. It consistently outperformed PCA in both classification and reconstruction tasks.
 
 ### MNIST example with 11 components for PolcaNet and PCA:
-![POLCA Net Architecture](assets/mnist_trained.png)
-
-### Cosine similarity between the first 11 components of PolcaNet and PCA:
 ![POLCA Net Architecture](assets/mnist_cosine_similarity_of_components.png)
 
+### Cosine similarity between the first 11 components of PolcaNet and PCA:
+![POLCA Net Architecture](assets/assets/mnist_cosine_similarity_of_components.png)
+
 ### Variance concentrating in the first 11 components of PolcaNet and PCA:
-![POLCA Net Architecture](assets/mnist_variance.png)
+![POLCA Net Architecture](assets/assets/mnist_variance.png)
 
 ###  Comparins of classification results for the features extracted by PolcaNet and PCA:
 Classifier, split (Test/Train), metrics (Accuracy, Precision, Recall, F1-Score), and transformation method (PCA/POLCA).
