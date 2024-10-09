@@ -35,7 +35,7 @@ POLCA Net has been tested on 16 diverse datasets, including MNIST, FashionMNIST,
 ### Variance concentrating in the first 11 components of PolcaNet:
 ![POLCA Net Architecture](assets/mnist_variance.png)
 
-###  Comparins of classification results for the features extracted by PolcaNet and PCA:
+###  Comparison of classification results for the features extracted by PolcaNet and PCA:
 Classifier, split (Test/Train), metrics (Accuracy, Precision, Recall, F1-Score), and transformation method (PCA/POLCA).
 
 | Classifier | Split | Metric | PCA | POLCA |
