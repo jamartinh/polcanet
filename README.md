@@ -6,6 +6,7 @@ Features:
 
 - Orthogonal latent features
 - Data compression and dimensionality reduction
+- Conentrates variance in early dimensions (as PCA)
 - Optional learning with labels (similar to LDA functionality)
 - Optional linear decoder for theoretical guarantees
 
@@ -32,10 +33,10 @@ POLCA Net has been tested on 16 diverse datasets, including MNIST, FashionMNIST,
 ### Cosine similarity between the first 11 components of PolcaNet and PCA:
 ![POLCA Net Architecture](assets/mnist_cosine_similarity_of_components.png)
 
-### Variance concentrating in the first 11 components of PolcaNet and PCA:
+### Variance concentrating in the first 11 components of PolcaNet:
 ![POLCA Net Architecture](assets/mnist_variance.png)
 
-###  Comparins of classification results for the features extracted by PolcaNet and PCA:
+###  Comparison of classification results for the features extracted by PolcaNet and PCA (without using labels):
 Classifier, split (Test/Train), metrics (Accuracy, Precision, Recall, F1-Score), and transformation method (PCA/POLCA).
 
 | Classifier | Split | Metric | PCA | POLCA |
