@@ -6,6 +6,7 @@ Features:
 
 - Orthogonal latent features
 - Data compression and dimensionality reduction
+- Conentrates variance in early dimensions (as PCA)
 - Optional learning with labels (similar to LDA functionality)
 - Optional linear decoder for theoretical guarantees
 
