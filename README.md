@@ -3,7 +3,7 @@
 POLCA Net is a novel deep learning architecture designed to extend PCA and LDA capabilities to non-linear domains. It combines an autoencoder framework with specialized loss functions to achieve effective dimensionality reduction, orthogonality, variance-based feature sorting, and high-fidelity reconstructions.
 
 <div align="center">
-	<img width = "50%" src="assets/modelo3.jpg">
+	<img width = "75%" src="assets/modelo3.jpg">
 </div>
 
 
