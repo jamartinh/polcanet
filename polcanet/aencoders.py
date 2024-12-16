@@ -1,7 +1,7 @@
 import math
 import numpy as np
 import torch
-from torch import nn as nn
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 
@@ -158,11 +158,6 @@ class oldLSTMDecoder(nn.Module):
         x = x.unsqueeze(1).repeat(1, self.seq_len, 1)
         x, _ = self.lstm(x)
         return x
-
-
-import torch
-import torch.nn as nn
-import numpy as np
 
 
 class LSTMDecoder(nn.Module):
@@ -767,9 +762,6 @@ class LinearDecoder(nn.Module):
         return x.view(-1, *self.input_dim)
 
 
-
-
-
 class EfficientLinearConvDecoder(nn.Module):
     def __init__(self, latent_dim, hidden_sizes, output_dim, bias=True, act_fn=nn.GELU, final_act_fn=None,
                  min_features=4):
@@ -849,6 +841,7 @@ class EfficientLinearConvDecoder(nn.Module):
         x = self.conv_layers(x)
         return x.squeeze()
 
+
 class LinearConvDecoder(nn.Module):
     """
     A decoder that uses linear layers followed by convolutional layers to reconstruct the output.
@@ -913,7 +906,7 @@ class LinearConvDecoder(nn.Module):
         return nn.Sequential(*layers)
 
     def _build_conv_layers(self, in_channels):
-        layers = []
+        layers = list()
         current_height = self.init_height
         current_width = self.init_width
 
@@ -958,7 +951,6 @@ class LinearConvDecoder(nn.Module):
             padding=1,
             bias=self.bias
         ))
-
 
         if self.final_act_fn:
             layers.append(self.final_act_fn)

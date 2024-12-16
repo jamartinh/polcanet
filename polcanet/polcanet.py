@@ -1,10 +1,10 @@
 import gc
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from itertools import combinations, batched
-from os.path import split
 from random import random
-from typing import List, Dict, Tuple, Union, Optional
+from typing import List, Union, Optional, Tuple, Dict
 
 import numpy as np
 import pandas as pd
@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 from IPython.core.display_functions import clear_output
 from IPython.display import display
-from absl.logging.converter import standard_to_cpp
 from ipywidgets.widgets import Output
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, TensorDataset
@@ -182,7 +181,7 @@ class PolcaNetLoss(nn.Module):
     """
 
     def __init__(self, latent_dim, r=1., c=1., alpha=1e-2, beta=1e-2, gamma=1e-4, class_labels=None,
-                 analyzer_rate=0.05):
+                 analyzer_rate=0.05, use_loss_analyzer=True):
         """
         Initialize PolcaNetLoss with the provided parameters.
         """
@@ -197,6 +196,12 @@ class PolcaNetLoss(nn.Module):
         self.beta = beta if isinstance(beta, tuple) else (beta, 1)
         self.gamma = gamma if isinstance(gamma, tuple) else (gamma, 1)
         self.class_labels = class_labels
+        self.use_loss_analyzer = use_loss_analyzer
+
+        self.alpha_sign = 1
+        if self.alpha[0] < 0.0:
+            self.alpha_sign = -1
+            self.alpha = abs(self.alpha[0]), self.alpha[1]
 
         self.loss_names = {"loss": "Total Loss"}
         self.loss_names.update({
@@ -213,7 +218,9 @@ class PolcaNetLoss(nn.Module):
         i = (torch.arange(latent_dim, dtype=torch.float32) ** 1.25) / latent_dim
         # register i as a buffer
         self.register_buffer("i", i)
-        self.loss_analyzer = LossConflictAnalyzer(loss_names=list(self.loss_names)[1:], rate=analyzer_rate)
+
+        if self.use_loss_analyzer:
+            self.loss_analyzer = LossConflictAnalyzer(loss_names=list(self.loss_names)[1:], rate=analyzer_rate)
 
     def forward(self, z, r, x, yp=None, target=None, classifier_model=None):
         """
@@ -252,8 +259,8 @@ class PolcaNetLoss(nn.Module):
         # Apply the mask to both the reconstruction and the original
         masked_r = r * mask
         masked_x = x * mask
-        l_rec = F.huber_loss(masked_r, masked_x) if t_rec else torch.tensor(0.0, device=z.device, requires_grad=True)
-        l_ort = self.orthogonality_loss(zw) if t_ort else 0
+        l_rec = F.mse_loss(masked_r, masked_x) if t_rec else torch.tensor(0.0, device=z.device, requires_grad=True)
+        l_ort = self.orthogonality_loss(zw, alpha_sign=self.alpha_sign) if t_ort else 0
         l_com = self.center_of_mass_loss(w) if t_com else 0
         l_var = v.mean() if t_var else 0
         l_class = self.clustering_loss(zw, target) if t_class else 0
@@ -291,7 +298,7 @@ class PolcaNetLoss(nn.Module):
         return l_com
 
     @staticmethod
-    def orthogonality_loss(z, eps=1e-8):
+    def orthogonality_loss(z, eps=1e-8, alpha_sign=1):
         """ Orthogonality loss
         Purpose: Encourage latent dimensions to be uncorrelated
         Method: Penalize off-diagonal elements of the cosine similarity matrix
@@ -307,7 +314,10 @@ class PolcaNetLoss(nn.Module):
 
         idx0, idx1 = torch.triu_indices(s.shape[0], s.shape[1], offset=1)  # indices of triu w/o diagonal
         cos_sim = s[idx0, idx1]
-        loss = torch.mean(cos_sim.square())
+        if alpha_sign < 0:
+            loss = torch.mean(1 - cos_sim.square())
+        else:
+            loss = torch.mean(cos_sim.square())
 
         return loss
 
@@ -324,7 +334,6 @@ class PolcaNetLoss(nn.Module):
         else:
             raise ValueError("Unsupported target shape")
         return l_cross_ent
-
 
     def clustering_loss(self, z, labels, eps=1e-8):
         # Use precomputed weight vector w
@@ -463,6 +472,7 @@ class PolcaNet(nn.Module):
                  analyzer_rate: float = 0.05,
                  std_noise: float = 0.0,
                  blend_prob: float = 0.5,
+                 use_loss_analyzer: bool = True,
                  ):
         """
         Initialize PolcaNet with the provided parameters.
@@ -488,6 +498,7 @@ class PolcaNet(nn.Module):
             self.decoder.encoder = None
             del self.decoder.encoder
 
+        self.use_loss_analyzer = use_loss_analyzer
         self.polca_loss = PolcaNetLoss(
             latent_dim=latent_dim,
             r=r,
@@ -497,13 +508,15 @@ class PolcaNet(nn.Module):
             gamma=gamma,
             class_labels=class_labels,
             analyzer_rate=analyzer_rate,
+            use_loss_analyzer=use_loss_analyzer,
+
         )
         self.mu = None
         self.std = None
 
     def forward(self, x):
         z = self.encoder(x)
-        r = self.decoder(z)  if self.class_labels is None else self.decoder(z[0])
+        r = self.decoder(z) if self.class_labels is None else self.decoder(z[0])
         return z, r
 
     def predict(self, in_x, mask=None, n_components=None):
@@ -576,7 +589,6 @@ class PolcaNet(nn.Module):
             optimizer = torch.optim.AdamW(self.parameters(), lr=lr,
                                           weight_decay=weight_decay, betas=(0.9, 0.99), eps=1e-6)
             free_optimizer = True
-
 
         fitter = self.fitter(optimizer=optimizer,
                              data=data,
@@ -652,56 +664,6 @@ class PolcaNet(nn.Module):
         torch.cuda.empty_cache()
 
         return None
-
-    def old_prepare_training_data(self,
-                                  data: Union[torch.Tensor, np.ndarray, DataLoader],
-                                  y: Optional[Union[torch.Tensor, np.ndarray]] = None,
-                                  val_data: Optional[Union[torch.Tensor, np.ndarray]] = None,
-                                  val_y: Optional[Union[torch.Tensor, np.ndarray]] = None,
-                                  batch_size: int = 256
-                                  ) -> Tuple[DataLoader, Optional[DataLoader]]:
-
-        # Prepare training data
-        data_loader = data
-        if not isinstance(data, DataLoader):
-            data = torch.as_tensor(data, dtype=torch.float32, device=self.device)
-
-            if y is not None:
-                y = torch.as_tensor(y, dtype=torch.int64, device=self.device)
-                dataset = TensorDataset(data, y)
-            else:
-                dataset = TensorDataset(data)
-
-            data_loader = DataLoader(
-                dataset,
-                batch_size=batch_size,
-                shuffle=True,
-                num_workers=0,
-                pin_memory=False,
-                drop_last=True,
-            )
-
-        # Prepare validation data
-        val_loader = val_data
-        if val_data is not None and not isinstance(val_data, DataLoader):
-            val_data = torch.as_tensor(val_data, dtype=torch.float32, device=self.device)
-
-            if val_y is not None:
-                val_y = torch.as_tensor(val_y, dtype=torch.int64, device=self.device)
-                val_dataset = TensorDataset(val_data, val_y)
-            else:
-                val_dataset = TensorDataset(val_data)
-
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=0,
-                pin_memory=False,
-                drop_last=True,
-            )
-
-        return data_loader, val_loader
 
     def prepare_training_data(self,
                               data: Union[torch.Tensor, np.ndarray, DataLoader],
@@ -827,21 +789,6 @@ class PolcaNet(nn.Module):
         if val_data is not None:
             val_data = val_data.cpu()
 
-
-    def oldfitter(self, optimizer, data, y=None, batch_size=512, num_epochs=100, val_data=None, val_y=None):
-        data_loader, val_loader = self.prepare_training_data(data, y, val_data, val_y, batch_size)
-        if isinstance(data_loader, FastTensorDataLoader):
-            print("Using FastTensorDataLoader")
-        for epoch in range(num_epochs):
-            self.train()
-            metrics = self.run_epoch(data_loader, optimizer)
-            if epoch % 10 == 0:
-                val_metrics = self.run_epoch(val_loader, None) if val_loader is not None else None
-            else:
-                val_metrics = {k:0 for k in metrics}
-
-            yield epoch, metrics, val_metrics
-
     def run_epoch(self, data_loader, optimizer):
 
         losses = defaultdict(list)
@@ -885,7 +832,8 @@ class PolcaNet(nn.Module):
         loss, aux_losses = self.polca_loss(z, r, x, yp=yp, target=y, classifier_model=classifier_module)
 
         # Analyze loss conflicts
-        self.polca_loss.loss_analyzer.step(self, aux_losses)
+        if self.use_loss_analyzer:
+            self.polca_loss.loss_analyzer.step(self, aux_losses)
 
         # Backward pass
         optimizer.zero_grad()
@@ -948,6 +896,27 @@ class PolcaNet(nn.Module):
 
         return z_transformed
 
+    def save(self, path, device="cpu"):
+        """save the whole model and params in a single pytorch file"""
+        prev_device = self.device
+        self.to(device)
+        torch.save(self, path)
+        self.to(prev_device)
+
+    @classmethod
+    def load(cls, path, device=None):
+        """load the whole model and params from a single pytorch file"""
+        if device is not None:
+            algo = torch.load(path, map_location=device)
+            algo.to(device)
+        else:
+            algo = torch.load(path)
+
+        return algo
+
+    def input_shape(self):
+        return self.encoder.input_shape
+
 
 class EncoderWrapper(nn.Module):
     """
@@ -993,3 +962,5 @@ class EncoderWrapper(nn.Module):
             return z, self.classifier(z)
 
         return z
+
+
