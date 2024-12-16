@@ -1,7 +1,6 @@
 import gc
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
 from itertools import combinations, batched
 from random import random
 from typing import List, Union, Optional, Tuple, Dict
@@ -962,5 +961,3 @@ class EncoderWrapper(nn.Module):
             return z, self.classifier(z)
 
         return z
-
-
