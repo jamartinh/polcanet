@@ -759,7 +759,9 @@ class LinearDecoder(nn.Module):
 
     def forward(self, z):
         x = self.decoder(z)
-        return x.view(-1, *self.input_dim)
+        if isinstance(self.input_dim,(tuple,list)):
+            x = x.view(x.size(0), *self.input_dim)
+        return x
 
 
 class EfficientLinearConvDecoder(nn.Module):
